@@ -1,0 +1,46 @@
+# Build outputs
+build/
+build-debug/
+build-release/
+*.exe
+*.ilk
+*.pdb
+
+# ZIP files
+*.zip
+
+# IDE files
+.vs/
+.vscode/
+*.vcxproj*
+*.sln
+CppProperties.json
+
+# Arduino build files
+**/*.hex
+**/*.elf
+**/*.map
+
+# External libraries (download separately, see DEPENDENCIES.md)
+extern/
+
+# FFTW3 build files
+**/fftw3/build/
+**/fftw3/Makefile*
+**/fftw3/config.*
+**/fftw3/libtool
+**/fftw3/*.pc
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# PowerShell scripts de debug
+run-debug.ps1
+
+# PDF files (opcional, puedes incluirlos si quieres)
+*.pdf
+
+# Log files
+*.log
