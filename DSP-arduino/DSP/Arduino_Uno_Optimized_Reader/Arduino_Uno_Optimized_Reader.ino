@@ -22,7 +22,7 @@ void setup(){
   attachInterrupt(digitalPinToInterrupt(pulsadorPin), SPlotter, RISING); //defino interrupcion externa para frenar o iniciar el muestreo
   config_ADC();
   config_timer1();
-  Serial.begin(2000000);
+  Serial.begin(115200);
 }
   
 void loop(){
@@ -42,7 +42,7 @@ void config_timer1(void){
   TCCR1A = TCCR1B = 0;//ELIMINAR CUALQUIE CONF PREVIA DEL TIMER
   TCNT1 = 0;//Borro cualquier conteo o valor previo
 
-  OCR1B = 999;//  SE COMPARA el timer 1 CONTRA 999 CONTEOS...con el fin de obtener 5 us, OCRB=(16MHz/prescaler * frecuencia maxima querida) - 1
+  OCR1B = 1332;//  SE COMPARA el timer 1 CONTRA 1332 CONTEOS...con el fin de obtener 1500 Hz, OCRB=(16MHz/prescaler * frecuencia maxima querida) - 1
   TCCR1B |= (1 << WGM12);  //se configuro el timer 1 en modo de comparación CTC
   TIMSK1 |= (1 << OCIE1B); //habilito la interrupción por comparación del timer 1 en el modo B.
   TCCR1B |= (1<<CS11);  //preescalador de 8

@@ -55,6 +55,17 @@ class MainWindow {
 
     int width, height;
 
+    // Variables para el modo freeze
+    bool frozen = false;
+    double frozen_left_limit = 0, frozen_right_limit = 5;
+    double frozen_down_limit = -7, frozen_up_limit = 7;
+    int frozen_size = 0;
+    
+    // Buffers para almacenar datos congelados
+    std::vector<double> frozen_dataX;
+    std::vector<double> frozen_dataY;
+    std::vector<double> frozen_dataY_filtered;
+
 public:
     MainWindow(int width, int height, Settings& config, SettingsWindow& ventanaConfig);
     ~MainWindow();
@@ -84,6 +95,9 @@ private:
     void AnalysisWorker();
 
     float statusbar_height = 30;
+
+    // Función para alternar el modo freeze
+    void ToggleFreeze();
 
 public:
     bool open = true;

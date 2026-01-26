@@ -139,6 +139,37 @@ void MainWindow::ToggleConnection()
     started = !started;
 }
 
+void MainWindow::ToggleFreeze()
+{
+    frozen = !frozen;
+    
+    if (frozen) {
+        // Guardar el estado actual cuando congelamos
+        frozen_left_limit = left_limit;
+        frozen_right_limit = right_limit;
+        frozen_down_limit = down_limit;
+        frozen_up_limit = up_limit;
+        frozen_size = size;
+        
+        // Copiar los datos actuales a los buffers congelados
+        if (scrollX && scrollY && filter_scrollY && size > 0) {
+            frozen_dataX.resize(size);
+            frozen_dataY.resize(size);
+            frozen_dataY_filtered.resize(size);
+            
+            std::copy(scrollX->data(), scrollX->data() + size, frozen_dataX.begin());
+            std::copy(scrollY->data(), scrollY->data() + size, frozen_dataY.begin());
+            std::copy(filter_scrollY->data(), filter_scrollY->data() + size, frozen_dataY_filtered.begin());
+        }
+    }
+    else {
+        // Liberar memoria cuando descongelamos
+        frozen_dataX.clear();
+        frozen_dataY.clear();
+        frozen_dataY_filtered.clear();
+    }
+}
+
 void MainWindow::Start() {
     CreateBuffers();
 
@@ -268,8 +299,45 @@ void MainWindow::Draw()
 {
     static double elapsed_time = 0;
 
-    int draw_size = size / settings->stride;
-    if (started && scrollX && scrollX->count() > 0) {
+    // Solo actualizar elapsed_time y límites si no está congelado
+    if (started && scrollX && scrollX->count() > 0 && !frozen) {
+        elapsed_time = scrollX->back();
+
+        if (elapsed_time > max_time_visible) {
+            right_limit = elapsed_time;
+            left_limit = elapsed_time - max_time_visible;
+        }
+    }
+
+    // Determinar qué datos usar (congelados o en vivo)
+    const double* dataX = nullptr;
+    const double* dataY = nullptr;
+    const double* dataY_filtered = nullptr;
+    int current_draw_size = 0;
+    
+    if (frozen && !frozen_dataX.empty()) {
+        // Usar datos congelados
+        dataX = frozen_dataX.data();
+        dataY = frozen_dataY.data();
+        dataY_filtered = frozen_dataY_filtered.data();
+        current_draw_size = frozen_size / settings->stride;
+    }
+    else {
+        // Usar datos en vivo
+        dataX = scrollX ? scrollX->data() : nullptr;
+        dataY = scrollY ? scrollY->data() : nullptr;
+        dataY_filtered = filter_scrollY ? filter_scrollY->data() : nullptr;
+        current_draw_size = size / settings->stride;
+    }
+    
+    // Usar límites congelados o actuales
+    double current_left = frozen ? frozen_left_limit : left_limit;
+    double current_right = frozen ? frozen_right_limit : right_limit;
+    double current_down = frozen ? frozen_down_limit : down_limit;
+    double current_up = frozen ? frozen_up_limit : up_limit;
+
+    // Solo actualizar si no está congelado
+    if (started && scrollX && scrollX->count() > 0 && !frozen) {
         elapsed_time = scrollX->back();
 
         if (elapsed_time > max_time_visible) {
@@ -302,41 +370,95 @@ void MainWindow::Draw()
         if (settings->port.empty()) {
             ImGui::SetItemTooltip("Selecciona un dispositivo primero");
         }
+
+        // Botón Freeze - solo visible cuando está conectado
+        if (started) {
+            if (frozen) {
+                // Botón en rojo cuando está congelado
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+                if (ImGui::Button("Reanudar")) {
+                    ToggleFreeze();
+                }
+                ImGui::PopStyleColor();
+            }
+            else {
+                if (ImGui::Button("Congelar")) {
+                    ToggleFreeze();
+                }
+            }
+            ImGui::SetItemTooltip("Congela la visualización para analizar sin detener la adquisición");
+        }
+
         ImGui::EndMenuBar();
     }
 
     if (ImPlot::BeginPlot("Entrada", { -1,0 }, ImPlotFlags_NoLegend)) {
-        // Los cambios de posición en una gráfica tienen efectos sobre la otra
-        ImPlot::SetupAxisLinks(ImAxis_X1, &left_limit, &right_limit);
-        ImPlot::SetupAxisLinks(ImAxis_Y1, &down_limit, &up_limit);
+        // Configurar vínculos según el estado de freeze
+        if (frozen) {
+            // En modo congelado: permitir zoom manual en ambos ejes
+            ImPlot::SetupAxisLinks(ImAxis_X1, &frozen_left_limit, &frozen_right_limit);
+            ImPlot::SetupAxisLinks(ImAxis_Y1, &frozen_down_limit, &frozen_up_limit);
+            
+            ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
+            ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
-        ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
-        ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
+            ImPlot::SetupAxisLimits(ImAxis_Y1, frozen_down_limit, frozen_up_limit, ImGuiCond_Once);
+            ImPlot::SetupAxisLimits(ImAxis_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Once);
+        }
+        else {
+            // En modo normal: los cambios se sincronizan entre gráficas
+            ImPlot::SetupAxisLinks(ImAxis_X1, &left_limit, &right_limit);
+            ImPlot::SetupAxisLinks(ImAxis_Y1, &down_limit, &up_limit);
+            
+            ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
+            ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
-        ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7, ImGuiCond_FirstUseEver);
-        ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7, ImGuiCond_FirstUseEver);
+            ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
+        }
 
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, INFINITY);
 
-        ImPlot::PlotLine("", scrollX->data(), scrollY->data(), draw_size, 0, 0, settings->byte_stride);
+        // Dibujar solo si hay datos válidos
+        if (dataX && dataY && current_draw_size > 0) {
+            ImPlot::PlotLine("", dataX, dataY, current_draw_size, 0, 0, settings->byte_stride);
+        }
         ImPlot::EndPlot();
     }
 
     filter_open = ImGui::CollapsingHeader("Filtro");
     if (filter_open) {
         if (ImPlot::BeginPlot("Salida", { -1,0 }, ImPlotFlags_NoLegend)) {
-            ImPlot::SetupAxisLinks(ImAxis_X1, &left_limit, &right_limit);
-            ImPlot::SetupAxisLinks(ImAxis_Y1, &down_limit, &up_limit);
+            // Configurar vínculos según el estado de freeze
+            if (frozen) {
+                // En modo congelado: permitir zoom manual
+                ImPlot::SetupAxisLinks(ImAxis_X1, &frozen_left_limit, &frozen_right_limit);
+                ImPlot::SetupAxisLinks(ImAxis_Y1, &frozen_down_limit, &frozen_up_limit);
+                
+                ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
+                ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
-            ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
-            ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
+                ImPlot::SetupAxisLimits(ImAxis_Y1, frozen_down_limit, frozen_up_limit, ImGuiCond_Once);
+                ImPlot::SetupAxisLimits(ImAxis_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Once);
+            }
+            else {
+                // En modo normal: sincronizar con el gráfico de entrada
+                ImPlot::SetupAxisLinks(ImAxis_X1, &left_limit, &right_limit);
+                ImPlot::SetupAxisLinks(ImAxis_Y1, &down_limit, &up_limit);
+                
+                ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
+                ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
-            ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7, ImGuiCond_FirstUseEver);
-            ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7, ImGuiCond_FirstUseEver);
+                ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
+            }
 
             ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, INFINITY);
 
-            ImPlot::PlotLine("", scrollX->data(), filter_scrollY->data(), draw_size, 0, 0, settings->byte_stride);
+            // Dibujar solo si hay datos válidos
+            if (dataX && dataY_filtered && current_draw_size > 0) {
+                ImPlot::PlotLine("", dataX, dataY_filtered, current_draw_size, 0, 0, settings->byte_stride);
+            }
             ImPlot::EndPlot();
         }
 
@@ -367,7 +489,11 @@ void MainWindow::Draw()
     }
 
     if (ImGui::CollapsingHeader("Análisis")) {
-        analysis_cv.notify_one();
+        // Solo notificar para actualizar FFT si no está congelado o si queremos analizar datos congelados
+        if (!frozen) {
+            analysis_cv.notify_one();
+        }
+        
         if (ImPlot::BeginPlot("Espectro", { -1, 0 }, ImPlotFlags_NoLegend)) {
             ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
             ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"Hz");
@@ -396,6 +522,13 @@ void MainWindow::Draw()
     if (ImGui::BeginViewportSideBar("Status", 0, ImGuiDir_Down, statusbar_height, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
         ImGuiIO& io = ImGui::GetIO();
         ImGui::Text("Tiempo transcurrido: %.1fs", elapsed_time);
+        
+        // Mostrar indicador de freeze
+        if (frozen) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[CONGELADO]");
+        }
+
         if (settings->show_frame_time) {
             std::string info = std::format("Rendimiento: {:.1f} ms/frame ({:.1f} FPS)", 1000.0f / io.Framerate, io.Framerate);
             auto info_size = ImGui::CalcTextSize(info.c_str());

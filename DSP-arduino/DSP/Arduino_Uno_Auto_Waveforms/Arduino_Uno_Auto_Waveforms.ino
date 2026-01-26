@@ -8,13 +8,19 @@
  * - Pines 2-7: DAC R2R de 6 bits (64 niveles)
  * - Pin 13: LED indicador que parpadea con cada cambio de forma
  * 
- * Ciclo automático (cada 30 segundos):
- * 1. Triangular 2Hz,   1V-4V   (offset 1V, amplitud 3V)
- * 2. Triangular 300Hz, 0V-5V   (offset 0V, amplitud 5V) 
- * 3. Cuadrada 2Hz,     1V-4V   (offset 1V, amplitud 3V)
- * 4. Cuadrada 300Hz,   0V-5V   (offset 0V, amplitud 5V)
- * 5. Senoidal 2Hz,     1V-4V   (offset 1V, amplitud 3V)
- * 6. Senoidal 300Hz,   0V-5V   (offset 0V, amplitud 5V)
+ * Ciclo automático (cada 15 segundos):
+ * 1.  Triangular 2Hz,   1V-4V   (offset 1V, amplitud 3V)
+ * 2.  Triangular 10Hz,  0V-5V   (offset 0V, amplitud 5V)
+ * 3.  Triangular 80Hz,  0V-5V   (offset 0V, amplitud 5V)
+ * 4.  Triangular 300Hz, 0V-5V   (offset 0V, amplitud 5V) 
+ * 5.  Cuadrada 2Hz,     1V-4V   (offset 1V, amplitud 3V)
+ * 6.  Cuadrada 10Hz,    0V-5V   (offset 0V, amplitud 5V)
+ * 7.  Cuadrada 80Hz,    0V-5V   (offset 0V, amplitud 5V)
+ * 8.  Cuadrada 300Hz,   0V-5V   (offset 0V, amplitud 5V)
+ * 9.  Senoidal 2Hz,     1V-4V   (offset 1V, amplitud 3V)
+ * 10. Senoidal 10Hz,    0V-5V   (offset 0V, amplitud 5V)
+ * 11. Senoidal 80Hz,    0V-5V   (offset 0V, amplitud 5V)
+ * 12. Senoidal 300Hz,   0V-5V   (offset 0V, amplitud 5V)
  * - Repetir...
  * 
  * Frecuencia de muestreo: 3840 Hz
@@ -34,7 +40,7 @@ Timer1 timer1(3840.0);
 uint8_t estado_actual = 0;              // 0-5: Estados del ciclo
 uint16_t indice_tabla = 0;              // Índice actual en la tabla de forma de onda
 uint32_t ultimo_cambio = 0;             // Timestamp del último cambio de forma
-const uint32_t INTERVALO_CAMBIO = 30000;  // 30 segundos en milisegundos
+const uint32_t INTERVALO_CAMBIO = 15000;  // 15 segundos en milisegundos
 
 // Variables de estado
 volatile bool generar_muestra = false;  // Flag de sincronización con timer
@@ -49,29 +55,41 @@ struct ConfigEstado {
   const char* nombre;   // Descripción para debug
 };
 
-const ConfigEstado configuraciones[6] = {
+const ConfigEstado configuraciones[12] = {
   {0, 0, 13, 38, "Triangular 2Hz 1V-4V"},    // offset=1V(13), amp=3V(38)
+  {0, 3, 0,  63, "Triangular 10Hz 0V-5V"},   // offset=0V(0),  amp=5V(63)
+  {0, 2, 0,  63, "Triangular 80Hz 0V-5V"},   // offset=0V(0),  amp=5V(63)
   {0, 1, 0,  63, "Triangular 300Hz 0V-5V"},  // offset=0V(0),  amp=5V(63) 
   {1, 0, 13, 38, "Cuadrada 2Hz 1V-4V"},      // offset=1V(13), amp=3V(38)
+  {1, 3, 0,  63, "Cuadrada 10Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
+  {1, 2, 0,  63, "Cuadrada 80Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
   {1, 1, 0,  63, "Cuadrada 300Hz 0V-5V"},    // offset=0V(0),  amp=5V(63)
   {2, 0, 13, 38, "Senoidal 2Hz 1V-4V"},      // offset=1V(13), amp=3V(38)
+  {2, 3, 0,  63, "Senoidal 10Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
+  {2, 2, 0,  63, "Senoidal 80Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
   {2, 1, 0,  63, "Senoidal 300Hz 0V-5V"}     // offset=0V(0),  amp=5V(63)
 };
 
 // Incrementos de índice para diferentes frecuencias
 // Para 3840 Hz de muestreo y tabla de 256 muestras:
 // - 2Hz:   incremento = (2 * 256) / 3840 = 0.133 ≈ usar cada 7.5 muestras
+// - 10Hz:  incremento = (10 * 256) / 3840 = 0.67 ≈ 2
+// - 80Hz:  incremento = (80 * 256) / 3840 = 5.33 ≈ 5
 // - 300Hz: incremento = (300 * 256) / 3840 = 20
-const uint16_t incrementos_freq[2] = {
+const uint16_t incrementos_freq[4] = {
   1,    // 2Hz: usar cada muestra (15Hz real con tabla 256 @ 3840Hz)
-  20    // 300Hz: saltar 20 posiciones por muestra 
+  20,   // 300Hz: saltar 20 posiciones por muestra 
+  5,    // 80Hz: saltar 5 posiciones por muestra
+  2     // 10Hz: saltar 2 posiciones por muestra
 };
 
 // Divisores para simular frecuencias bajas
 uint16_t contador_div = 0;
-const uint16_t divisores_freq[2] = {
+const uint16_t divisores_freq[4] = {
   7,    // 2Hz: dividir por 7 (aproximadamente 2.14Hz)
-  1     // 300Hz: sin división
+  1,    // 300Hz: sin división
+  1,    // 80Hz: sin división
+  1     // 10Hz: sin división (aproximadamente 7.5Hz)
 };
 
 /**
@@ -139,11 +157,11 @@ ISR(TIMER1_COMPA_vect) {
 
 /**
  * Cambiar al siguiente estado en el ciclo
- * 6 estados: Tri2Hz_1-4V → Tri300Hz_0-5V → Cua2Hz_1-4V → Cua300Hz_0-5V → Sen2Hz_1-4V → Sen300Hz_0-5V
+ * 12 estados: Tri2Hz → Tri10Hz → Tri80Hz → Tri300Hz → Cua2Hz → Cua10Hz → Cua80Hz → Cua300Hz → Sen2Hz → Sen10Hz → Sen80Hz → Sen300Hz
  */
 void cambiar_estado() {
   estado_actual++;
-  if (estado_actual >= 6) {
+  if (estado_actual >= 12) {
     estado_actual = 0;  // Volver al inicio del ciclo
   }
   
@@ -170,13 +188,19 @@ void setup() {
   Serial.begin(9600);
   Serial.println("=== Generador Automático de Formas de Onda Avanzado ===");
   Serial.println("Arduino Uno - DAC 6 bits (Pines 2-7)");
-  Serial.println("Ciclo de 6 estados, 30s cada uno:");
-  Serial.println("1. Triangular 2Hz 1V-4V");
-  Serial.println("2. Triangular 300Hz 0V-5V"); 
-  Serial.println("3. Cuadrada 2Hz 1V-4V");
-  Serial.println("4. Cuadrada 300Hz 0V-5V");
-  Serial.println("5. Senoidal 2Hz 1V-4V");
-  Serial.println("6. Senoidal 300Hz 0V-5V");
+  Serial.println("Ciclo de 12 estados, 15s cada uno:");
+  Serial.println("1.  Triangular 2Hz 1V-4V");
+  Serial.println("2.  Triangular 10Hz 0V-5V");
+  Serial.println("3.  Triangular 80Hz 0V-5V");
+  Serial.println("4.  Triangular 300Hz 0V-5V"); 
+  Serial.println("5.  Cuadrada 2Hz 1V-4V");
+  Serial.println("6.  Cuadrada 10Hz 0V-5V");
+  Serial.println("7.  Cuadrada 80Hz 0V-5V");
+  Serial.println("8.  Cuadrada 300Hz 0V-5V");
+  Serial.println("9.  Senoidal 2Hz 1V-4V");
+  Serial.println("10. Senoidal 10Hz 0V-5V");
+  Serial.println("11. Senoidal 80Hz 0V-5V");
+  Serial.println("12. Senoidal 300Hz 0V-5V");
   Serial.println("");
   
   // Configurar pines del DAC como salida (pines 2-7)
