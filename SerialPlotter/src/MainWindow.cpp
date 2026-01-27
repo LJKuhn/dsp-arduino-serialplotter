@@ -42,6 +42,20 @@ bool Button(const char* label, bool disabled = false) {
     return ImGui::Button(label);
 }
 
+bool Button(const char* label, ImVec2 size, bool disabled = false) {
+    if (disabled) {
+        ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+
+        ImGui::Button(label, size);
+
+        ImGui::PopStyleVar();
+        ImGui::PopItemFlag();
+        return false;
+    }
+    return ImGui::Button(label, size);
+}
+
 std::string MetricFormatter(double value, std::string_view unit) {
     static double v[] = { 1e12, 1e9, 1e6, 1e3, 1, 1e-3, 1e-6, 1e-9, 1e-12 };
     static const char* p[] = { "T", "G", "M", "k", "", "m", "u", "n", "p" };
@@ -168,6 +182,66 @@ void MainWindow::ToggleFreeze()
         frozen_dataY.clear();
         frozen_dataY_filtered.clear();
     }
+}
+
+void MainWindow::DrawSidebar()
+{
+    // Panel lateral izquierdo con controles
+    ImGui::SetNextWindowPos({ 0, 0 });
+    ImGui::SetNextWindowSize(ImVec2(sidebar_width, height - statusbar_height));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+    
+    ImGui::Begin("Panel de Control", nullptr,
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar | 
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    
+    ImGui::PopStyleVar(2);
+
+    ImGui::TextColored(ImVec4(0.110f, 0.784f, 0.035f, 1.0f), "CONTROL");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Selector de puerto
+    ImGui::Text("Puerto Serial");
+    MenuPuertos(settings->port);
+    ImGui::Spacing();
+
+    // Botón de configuración
+    if (ImGui::Button("Configuración", ImVec2(-1, 0))) {
+        settingsWindow->Toggle();
+    }
+    ImGui::Spacing();
+
+    // Botón Conectar/Desconectar
+    if (Button(started ? "Desconectar" : "Conectar", ImVec2(-1, 0), settings->port.empty())) {
+        ToggleConnection();
+    }
+    if (settings->port.empty()) {
+        ImGui::SetItemTooltip("Selecciona un dispositivo primero");
+    }
+    ImGui::Spacing();
+
+    // Botón Freeze - solo visible cuando está conectado
+    if (started) {
+        if (frozen) {
+            // Botón en verde brillante cuando está congelado
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.9f, 0.05f, 1.0f));
+            if (ImGui::Button("Reanudar", ImVec2(-1, 0))) {
+                ToggleFreeze();
+            }
+            ImGui::PopStyleColor();
+        }
+        else {
+            if (ImGui::Button("Congelar", ImVec2(-1, 0))) {
+                ToggleFreeze();
+            }
+        }
+        ImGui::SetItemTooltip("Congela la visualización para analizar sin detener la adquisición");
+    }
+
+    ImGui::End();
 }
 
 void MainWindow::Start() {
@@ -329,70 +403,35 @@ void MainWindow::Draw()
         dataY_filtered = filter_scrollY ? filter_scrollY->data() : nullptr;
         current_draw_size = size / settings->stride;
     }
-    
-    // Usar límites congelados o actuales
-    double current_left = frozen ? frozen_left_limit : left_limit;
-    double current_right = frozen ? frozen_right_limit : right_limit;
-    double current_down = frozen ? frozen_down_limit : down_limit;
-    double current_up = frozen ? frozen_up_limit : up_limit;
 
-    // Solo actualizar si no está congelado
-    if (started && scrollX && scrollX->count() > 0 && !frozen) {
-        elapsed_time = scrollX->back();
+    // Dibujar el panel lateral
+    DrawSidebar();
 
-        if (elapsed_time > max_time_visible) {
-            right_limit = elapsed_time;
-            left_limit = elapsed_time - max_time_visible;
-        }
-    }
-
-    ImGui::SetNextWindowPos({ 0, 0 });
-    ImGui::SetNextWindowSize(ImVec2(width, height - statusbar_height));
+    // Ventana principal de gráficos (ajustada para dejar espacio al sidebar)
+    ImGui::SetNextWindowPos({ sidebar_width, 0 });
+    ImGui::SetNextWindowSize(ImVec2(width - sidebar_width, height - statusbar_height));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
     ImGui::Begin("Ventana principal", &open,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_MenuBar |
-                 ImGuiWindowFlags_NoBringToFrontOnFocus);
-    ImGui::PopStyleVar();
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar |
+                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleVar(2);
 
     auto win_pos = ImGui::GetWindowPos();
     auto win_size = ImGui::GetWindowSize();
 
-    if (ImGui::BeginMenuBar())
-    {
-        MenuPuertos(settings->port);
+    // Calcular altura para cada gráfico
+    // Si todos están abiertos: dividir en 3 partes iguales
+    // Si solo algunos: ajustar proporcionalmente
+    float available_height = ImGui::GetContentRegionAvail().y;
+    
+    // Altura fija para headers colapsables
+    float header_height = 25.0f;
+    
+    // Por defecto, dividir en 3 (asumiendo que todos están abiertos)
+    float graph_height = (available_height - header_height * 2) / 3.0f;
 
-        if (ImGui::Button("Configuración"))
-            settingsWindow->Toggle();
-
-        if (Button(started ? "Desconectar" : "Conectar", settings->port.empty())) {
-            ToggleConnection();
-        }
-        if (settings->port.empty()) {
-            ImGui::SetItemTooltip("Selecciona un dispositivo primero");
-        }
-
-        // Botón Freeze - solo visible cuando está conectado
-        if (started) {
-            if (frozen) {
-                // Botón en rojo cuando está congelado
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-                if (ImGui::Button("Reanudar")) {
-                    ToggleFreeze();
-                }
-                ImGui::PopStyleColor();
-            }
-            else {
-                if (ImGui::Button("Congelar")) {
-                    ToggleFreeze();
-                }
-            }
-            ImGui::SetItemTooltip("Congela la visualización para analizar sin detener la adquisición");
-        }
-
-        ImGui::EndMenuBar();
-    }
-
-    if (ImPlot::BeginPlot("Entrada", { -1,0 }, ImPlotFlags_NoLegend)) {
+    if (ImPlot::BeginPlot("Entrada", { -1, graph_height }, ImPlotFlags_NoLegend)) {
         // Configurar vínculos según el estado de freeze
         if (frozen) {
             // En modo congelado: permitir zoom manual en ambos ejes
@@ -419,16 +458,18 @@ void MainWindow::Draw()
 
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, INFINITY);
 
-        // Dibujar solo si hay datos válidos
+        // Dibujar solo si hay datos válidos con color verde
         if (dataX && dataY && current_draw_size > 0) {
+            ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.110f, 0.784f, 0.035f, 1.0f));  // #1CC809
             ImPlot::PlotLine("", dataX, dataY, current_draw_size, 0, 0, settings->byte_stride);
+            ImPlot::PopStyleColor();
         }
         ImPlot::EndPlot();
     }
 
-    filter_open = ImGui::CollapsingHeader("Filtro");
+    filter_open = ImGui::CollapsingHeader("Filtro", ImGuiTreeNodeFlags_DefaultOpen);
     if (filter_open) {
-        if (ImPlot::BeginPlot("Salida", { -1,0 }, ImPlotFlags_NoLegend)) {
+        if (ImPlot::BeginPlot("Salida", { -1, graph_height }, ImPlotFlags_NoLegend)) {
             // Configurar vínculos según el estado de freeze
             if (frozen) {
                 // En modo congelado: permitir zoom manual
@@ -455,9 +496,11 @@ void MainWindow::Draw()
 
             ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, INFINITY);
 
-            // Dibujar solo si hay datos válidos
+            // Dibujar solo si hay datos válidos with color verde neón
             if (dataX && dataY_filtered && current_draw_size > 0) {
+                ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.110f, 0.784f, 0.035f, 1.0f));  // #1CC809
                 ImPlot::PlotLine("", dataX, dataY_filtered, current_draw_size, 0, 0, settings->byte_stride);
+                ImPlot::PopStyleColor();
             }
             ImPlot::EndPlot();
         }
@@ -488,13 +531,13 @@ void MainWindow::Draw()
         }
     }
 
-    if (ImGui::CollapsingHeader("Análisis")) {
+    if (ImGui::CollapsingHeader("Análisis", ImGuiTreeNodeFlags_DefaultOpen)) {
         // Solo notificar para actualizar FFT si no está congelado o si queremos analizar datos congelados
         if (!frozen) {
             analysis_cv.notify_one();
         }
         
-        if (ImPlot::BeginPlot("Espectro", { -1, 0 }, ImPlotFlags_NoLegend)) {
+        if (ImPlot::BeginPlot("Espectro", { -1, graph_height }, ImPlotFlags_NoLegend)) {
             ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
             ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"Hz");
             ImPlot::SetupAxisLimits(ImAxis_X1, 0.99, settings->samples, ImGuiCond_FirstUseEver);
@@ -516,17 +559,19 @@ void MainWindow::Draw()
         }
     }
 
-    // Barra inferior
+    // Barra inferior (abarca toda la ventana, incluyendo sidebar)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::SetNextWindowPos({0, win_size.y - statusbar_height});
-    if (ImGui::BeginViewportSideBar("Status", 0, ImGuiDir_Down, statusbar_height, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    ImGui::SetNextWindowPos({0, height - statusbar_height});
+    ImGui::SetNextWindowSize(ImVec2(width, statusbar_height));
+    if (ImGui::Begin("Status", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar | 
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove)) {
         ImGuiIO& io = ImGui::GetIO();
         ImGui::Text("Tiempo transcurrido: %.1fs", elapsed_time);
         
         // Mostrar indicador de freeze
         if (frozen) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[CONGELADO]");
+            ImGui::TextColored(ImVec4(0.110f, 0.784f, 0.035f, 1.0f), "[CONGELADO]");  // #1CC809
         }
 
         if (settings->show_frame_time) {

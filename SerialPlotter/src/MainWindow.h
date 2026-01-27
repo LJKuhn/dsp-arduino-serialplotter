@@ -51,7 +51,7 @@ class MainWindow {
 
     int min_cutoff_frequency = 1, max_cutoff_frequency = 100;
     int cutoff_frequency[3] = { 0, 20, 100 };
-    Filter selected_filter = Filter::LowPass;
+    Filter selected_filter = Filter::None;  // Cambiar estado inicial a Ninguno
 
     int width, height;
 
@@ -88,16 +88,21 @@ private:
     static void ResetFilters();
 
     bool do_serial_work = true;
-    bool filter_open = false;
+    bool filter_open = true;  // Cambiar a true para que se muestre por defecto
     void SerialWorker();
 
     bool do_analysis_work = true;
+    bool analysis_open = true;  // Agregar para que el análisis se muestre por defecto
     void AnalysisWorker();
 
     float statusbar_height = 30;
+    float sidebar_width = 200;  // Reducir de 250 a 200 pixeles
 
     // Función para alternar el modo freeze
     void ToggleFreeze();
+    
+    // Función para dibujar el panel lateral
+    void DrawSidebar();
 
 public:
     bool open = true;

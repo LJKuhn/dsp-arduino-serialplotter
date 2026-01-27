@@ -24,7 +24,9 @@ FFT::~FFT()
 }
 
 void FFT::Plot(double sampling_frequency) {
+    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.110f, 0.784f, 0.035f, 1.0f));  // #1CC809
     ImPlot::PlotStems("", amplitudes.data(), amplitudes_size, 0, sampling_frequency / samples_size);
+    ImPlot::PopStyleColor();
 }
 
 void FFT::SetData(const double* data, uint32_t count) {
