@@ -37,6 +37,9 @@ void SettingsWindow::Toggle() {
     open = !open;
 }
 
+// NOTA: Esta ventana ya no se utiliza activamente.
+// Todas las opciones de configuración ahora están integradas
+// directamente en el sidebar de MainWindow para acceso rápido.
 void SettingsWindow::Draw() {
     using namespace ImGui;
     static int stride_exp = 2;

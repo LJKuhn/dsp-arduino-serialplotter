@@ -23,6 +23,7 @@ class MainWindow {
     std::thread serial_thread, analysis_thread;
     std::mutex analysis_mutex;
     std::condition_variable analysis_cv;
+    std::mutex data_mutex;  // Protege acceso concurrente a scrollX, scrollY y filter_scrollY
 
     FFT* fft = nullptr;
     ScrollBuffer<double>* scrollX = nullptr, * scrollY = nullptr, * filter_scrollY = nullptr;
@@ -35,7 +36,7 @@ class MainWindow {
 
     int max = 0;
 
-    // L�mites del gráfico de entrada y filtrado
+    // Límites de zoom del gráfico (sincronizados entre Entrada y Salida)
     double left_limit = 0, right_limit = max_time_visible;
     double down_limit = -7, up_limit = 7;
 
@@ -51,17 +52,17 @@ class MainWindow {
 
     int min_cutoff_frequency = 1, max_cutoff_frequency = 100;
     int cutoff_frequency[3] = { 0, 20, 100 };
-    Filter selected_filter = Filter::None;  // Cambiar estado inicial a Ninguno
+    Filter selected_filter = Filter::None;  // Estado inicial sin filtro
 
     int width, height;
 
-    // Variables para el modo freeze
+    // Variables para el modo freeze (congelar visualización sin detener adquisición)
     bool frozen = false;
     double frozen_left_limit = 0, frozen_right_limit = 5;
     double frozen_down_limit = -7, frozen_up_limit = 7;
     int frozen_size = 0;
     
-    // Buffers para almacenar datos congelados
+    // Buffers para almacenar snapshot de datos cuando se congela
     std::vector<double> frozen_dataX;
     std::vector<double> frozen_dataY;
     std::vector<double> frozen_dataY_filtered;
@@ -88,21 +89,17 @@ private:
     static void ResetFilters();
 
     bool do_serial_work = true;
-    bool filter_open = true;  // Cambiar a true para que se muestre por defecto
+    bool filter_open = true;  // Sección Filtro abierta por defecto
     void SerialWorker();
 
     bool do_analysis_work = true;
-    bool analysis_open = true;  // Agregar para que el análisis se muestre por defecto
+    bool analysis_open = true;  // Sección Análisis abierta por defecto
     void AnalysisWorker();
 
-    float statusbar_height = 30;
-    float sidebar_width = 200;  // Reducir de 250 a 200 pixeles
+    float sidebar_width = 240;  // Ancho del panel lateral de control
 
-    // Función para alternar el modo freeze
-    void ToggleFreeze();
-    
-    // Función para dibujar el panel lateral
-    void DrawSidebar();
+    void ToggleFreeze();  // Alterna entre modo congelado y en vivo
+    void DrawSidebar();   // Dibuja el panel lateral con todos los controles
 
 public:
     bool open = true;

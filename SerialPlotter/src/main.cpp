@@ -73,14 +73,18 @@ int main(int, char**)
     if (window == nullptr)
         return -1;
 
-    // Maximizar la ventana al iniciar
-    glfwMaximizeWindow(window);
-
     glfwSetWindowSizeCallback(window, window_resize);
     glfwSetWindowIconifyCallback(window, window_minimized);
     glfwSetWindowFocusCallback(window, window_focused);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
+
+    // Maximizar ventana al inicio para aprovechar toda la pantalla
+    glfwMaximizeWindow(window);
+    
+    // Actualizar dimensiones reales después de maximizar
+    glfwGetFramebufferSize(window, &width, &height);
+    mainWindow.SetSize(width, height);
 
     if (!gladLoadGL()) {
         glfwTerminate();
@@ -95,10 +99,9 @@ int main(int, char**)
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    // Setup Dear ImGui style - Cambiar a tema oscuro
+    // Aplicar tema oscuro personalizado con paleta #111112 (fondo) y #1CC809 (verde)
     ImGui::StyleColorsDark();
     
-    // Personalizar colores con tu paleta
     ImGuiStyle& style = ImGui::GetStyle();
     
     // #111112 = RGB(17, 17, 18) -> Convertir a float: 17/255 = 0.067
@@ -155,23 +158,23 @@ int main(int, char**)
 
     style.WindowMenuButtonPosition = ImGuiDir_None;
 
-    // Color de fondo de la ventana OpenGL - Negro
+    // Color de fondo negro para ventana OpenGL
     ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 1.00f);
 
     double last_time = glfwGetTime();
     int minimized_fps = 20;
     double minimized_frametime = 1.0 / minimized_fps;
 
-    // Main loop
+    // Bucle principal de renderizado
     while (!glfwWindowShouldClose(window))
     {
-        // Espera para procesar los eventos si la ventana está minimizada 
+        // Esperar eventos si la ventana está minimizada (ahorro de CPU)
         if (minimized)
             glfwWaitEvents();
         else
             glfwPollEvents();
 
-        // Limitar FPS y uso de CPU si la ventana está abierta pero no tiene foco
+        // Limitar FPS cuando la ventana no tiene foco (ahorro de CPU)
         if (!focused) {
             if (minimized_frametime > 0.02)
                 std::this_thread::sleep_for(std::chrono::duration<double>(minimized_frametime - 0.02));
