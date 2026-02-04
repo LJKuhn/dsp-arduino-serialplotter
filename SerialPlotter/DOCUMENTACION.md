@@ -20,6 +20,7 @@
 - **Visualiza** las señales en tiempo real mediante gráficas interactivas
 - **Analiza** las señales usando Transformada Rápida de Fourier (FFT)
 - **Filtra** las señales con filtros IIR configurables (pasa-bajos, pasa-altos)
+- **Congela** la visualización sin detener la adquisición (modo freeze)
 - **Retransmite** las señales filtradas de vuelta al microcontrolador
 
 ### Tecnologías Principales
@@ -33,24 +34,24 @@
 ## Arquitectura del Sistema
 
 ```
-???????????????????????????????????????????????????????????
-?                    Aplicación Principal                  ?
-?                      (main.cpp)                          ?
-???????????????????????????????????????????????????????????
-                 ?
-         ?????????????????
-         ?               ?
-    ????????????   ?????????????
-    ? MainWindow?   ? Settings  ?
-    ?  (GUI)    ?   ?  Window   ?
-    ?????????????   ?????????????
-         ?
-    ??????????????????????????????????
-    ?                                ?
-??????????  ????????  ????????  ????????
-? Serial ?  ? FFT  ?  ?Filter?  ?Buffer?
-?        ?  ?      ?  ?(IIR) ?  ?      ?
-??????????  ????????  ????????  ????????
+????????????????????????????????????????????????????
+?                Aplicación Principal              ?
+?                  (main.cpp)                      ?
+????????????????????????????????????????????????????
+             ?
+      ???????????????
+      ?             ?
+ ???????????  ??????????????
+ ?MainWindow?  ? Settings   ?
+ ?  (GUI)   ?  ?  Window    ?
+ ????????????  ??????????????
+       ?
+ ??????????????????????????????????
+ ?                                 ?
+?????????? ???????? ???????? ????????
+? Serial ? ? FFT  ? ?Filter? ?Buffer?
+?        ? ?      ? ?(IIR) ? ?      ?
+?????????? ???????? ???????? ????????
 ```
 
 ### Hilos de Ejecución
@@ -58,6 +59,16 @@
 1. **Hilo Principal**: Renderizado de la interfaz gráfica (ImGui + OpenGL)
 2. **Hilo Serial**: Lectura/escritura continua del puerto serie
 3. **Hilo de Análisis**: Cálculo de FFT en segundo plano
+
+### Modo Freeze (Congelado)
+
+El modo freeze permite **pausar la visualización sin detener la adquisición**:
+
+- **Snapshot**: Al congelar, se copia un snapshot completo de los datos actuales
+- **Zoom independiente**: Permite hacer zoom y análisis sin afectar la captura en vivo
+- **Adquisición continua**: El SerialWorker sigue capturando datos en segundo plano
+- **Thread-safety**: Usa mutex (data_mutex) para proteger la copia del snapshot
+- **Reanudación**: Al descongelar, vuelve al modo en vivo sin pérdida de datos
 
 ---
 
@@ -98,6 +109,8 @@ SerialPlotter/
 ---
 
 ## Bibliotecas Externas
+
+SerialPlotter depende de varias bibliotecas externas para su funcionamiento:
 
 ### 1. **GLFW** (`extern/glfw/`)
 - **Propósito**: Gestión de ventanas, contextos OpenGL y entrada de usuario
@@ -150,329 +163,30 @@ SerialPlotter/
 
 ## Módulos del Proyecto
 
-### `main.cpp` / `main.h`
-**Responsabilidad**: Punto de entrada y bucle principal de la aplicación.
-
-**Funcionalidades**:
-- Inicialización de GLFW y OpenGL
-- Creación del contexto de ImGui e ImPlot
-- Bucle de renderizado principal
-- Gestión de eventos de ventana (minimización, foco, redimensionamiento)
-- Control de framerate adaptativo (reduce CPU cuando la ventana está minimizada)
-
-**Flujo**:
-```cpp
-1. Inicializar GLFW
-2. Crear ventana OpenGL
-3. Inicializar ImGui/ImPlot
-4. Bucle principal:
-   - Procesar eventos
-   - Actualizar lógica
-   - Renderizar interfaz
-   - Intercambiar buffers
-5. Limpieza y cierre
-```
-
----
-
-### `MainWindow.cpp` / `MainWindow.h`
-**Responsabilidad**: Ventana principal y lógica central de la aplicación.
-
-**Componentes**:
-
-#### **Gestión de Datos**
-- `ScrollBuffer<double>* scrollX, *scrollY, *filter_scrollY`: Buffers circulares para las muestras
-- `FFT* fft`: Motor de análisis espectral
-- `Serial serial`: Interfaz de comunicación serie
-
-#### **Hilos de Trabajo**
-1. **Serial Worker** (`SerialWorker()`):
-   - Lee datos del puerto serie
-   - Transforma valores ADC (0-255) a voltaje (-6V a +6V)
-   - Aplica filtro seleccionado
-   - Escribe datos filtrados de vuelta al puerto
-   - **Frecuencia**: Limitada por la velocidad del puerto serie
-
-2. **Analysis Worker** (`AnalysisWorker()`):
-   - Calcula FFT de las últimas N muestras
-   - Identifica frecuencia dominante y offset DC
-   - **Activación**: Solo cuando la pestaña "Análisis" está abierta
-   - **Frecuencia**: ~10 Hz (cada 100ms)
-
-#### **Interfaz Gráfica** (`Draw()`)
-Renderiza tres secciones principales:
-
-1. **Menú Superior**:
-   - Selector de puerto COM
-   - Botón de configuración
-   - Botón Conectar/Desconectar
-
-2. **Gráfica de Entrada**:
-   - Muestra la señal original recibida
-   - Eje X: Tiempo (con formato métrico: ms, s)
-   - Eje Y: Voltaje (con formato métrico: mV, V)
-   - Zoom y paneo sincronizado con otras gráficas
-
-3. **Sección de Filtro** (plegable):
-   - **Gráfica de Salida**: Señal filtrada
-   - **Selectores**: Ninguno / Pasa-bajos / Pasa-altos
-   - **Slider**: Frecuencia de corte
-
-4. **Sección de Análisis** (plegable):
-   - **Espectro de frecuencias**: Gráfica logarítmica
-   - **Información**: Frecuencia dominante y offset DC
-
-5. **Barra de Estado**:
-   - Tiempo transcurrido
-   - Métricas de rendimiento (FPS, ms/frame)
-
-**Transformación de Muestras**:
-```cpp
-// ADC (0-255) ? Voltaje (-6V a +6V)
-double voltage = (sample - minimum) * map_factor - 6;
-
-// Voltaje ? ADC
-uint8_t sample = round((voltage + 6) * (maximum - minimum) / 12.0 + minimum);
-```
-
----
-
-### `Serial.cpp` / `Serial.h`
-**Responsabilidad**: Comunicación con el puerto serie (Windows API).
-
-**Funciones Principales**:
-
-#### `EnumerateComPorts()`
-- **Propósito**: Lista todos los puertos COM disponibles
-- **Método**: Consulta el registro de Windows (`HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\SERIALCOMM`)
-- **Retorna**: `std::vector<std::string>` con nombres de puertos (ej: "COM3", "COM4")
-
-#### `Serial::open(port, baud)`
-- **Propósito**: Abre un puerto COM con configuración específica
-- **Parámetros**:
-  - `port`: Nombre del puerto (ej: "COM3")
-  - `baud`: Velocidad en baudios (por defecto: velocidad de muestreo × 10)
-- **Configuración**:
-  - 8 bits de datos
-  - Sin paridad
-  - 1 bit de parada
-  - Sin control de flujo
-  - Timeouts ajustados para lectura no bloqueante
-
-#### `Serial::read(buffer, size)`
-- **Propósito**: Lee bytes del puerto
-- **Retorna**: Número de bytes leídos (0 si no hay datos)
-- **Nota**: No bloqueante gracias a `COMMTIMEOUTS` configurados
-
-#### `Serial::write(buffer, size)`
-- **Propósito**: Escribe bytes al puerto
-- **Retorna**: Número de bytes escritos
-
-#### `Serial::available()`
-- **Propósito**: Consulta cuántos bytes están disponibles en el buffer de entrada
-- **Uso**: `ClearCommError()` de la API de Windows
-
----
-
-### `FFT.cpp` / `FFT.h`
-**Responsabilidad**: Análisis espectral de señales usando FFTW3.
-
-**Estructura Interna**:
-```cpp
-class FFT {
-    fftw_complex* complex;      // Salida compleja de la FFT
-    fftw_plan p;                // Plan precomputado de FFTW
-    vector<double> samples;     // Entrada (señal temporal)
-    vector<double> amplitudes;  // Salida (magnitudes)
-    double offset;              // Componente DC
-    int n_frequency;            // Índice de frecuencia dominante
-};
-```
-
-**Proceso de Análisis**:
-
-1. **Inicialización** (`constructor`):
-   - Crea un plan FFT real-a-complejo (`fftw_plan_dft_r2c_1d`)
-   - Reserva memoria para `samples_size` muestras
-   - Reserva memoria para `samples_size/2 + 1` amplitudes (espectro unilateral)
-
-2. **Carga de Datos** (`SetData`):
-   - Copia datos de entrada al buffer interno
-   - Rellena con ceros si hay menos muestras que el tamaño del plan
-
-3. **Cálculo** (`Compute`):
-   - Ejecuta el plan FFT (`fftw_execute(p)`)
-   - Calcula magnitudes: `sqrt(real² + imag²) / N`
-   - Normaliza dividiendo por el número de muestras
-   - Identifica la frecuencia con mayor amplitud (excluyendo DC)
-   - Guarda el componente DC (offset)
-
-4. **Resultados**:
-   - `Offset()`: Valor medio de la señal (componente DC)
-   - `Frequency(fs)`: Frecuencia dominante en Hz
-   - `Plot(fs)`: Renderiza el espectro con ImPlot
-
-**Fórmula de Frecuencia**:
-```
-f = (índice × frecuencia_muestreo) / tamaño_muestra
-```
-
----
-
-### `Settings.cpp` / `Settings.h`
-**Responsabilidad**: Configuración de la aplicación y ventana de ajustes.
-
-**Parámetros Configurables**:
-
-#### `Settings` (estructura)
-```cpp
-int sampling_rate = 3840;        // Hz - Frecuencia de muestreo
-int baud_rate = 38400;           // baudios (sampling_rate × 10)
-int samples = 3840;              // Número de muestras para FFT
-string port;                     // Puerto COM seleccionado
-
-int maximum = 49;                // Valor ADC para +6V
-int minimum = 175;               // Valor ADC para -6V
-double map_factor;               // Factor de conversión ADC?Voltaje
-
-int stride = 4;                  // Dibuja 1 de cada N puntos
-int byte_stride;                 // stride × sizeof(double)
-
-bool show_frame_time = false;    // Muestra FPS en barra de estado
-bool open = false;               // Estado de la ventana de config
-```
-
-#### `SettingsWindow::Draw()`
-Renderiza la ventana de configuración con:
-
-1. **Combo de Frecuencia de Muestreo**:
-   - Opciones predefinidas: 120, 240, 480, 960, ... 100000 Hz
-   - Ajusta automáticamente `baud_rate = sampling_rate × 10`
-
-2. **Combo de Velocidad (Baud Rate)**:
-   - Velocidades estándar: 9600, 115200, etc.
-
-3. **Combo de Puerto COM**:
-   - Lista dinámica de puertos disponibles
-
-4. **Sección "Mapeo"** (TreeNode):
-   - Sliders para calibrar máximo y mínimo del ADC
-   - Permite ajustar el rango de voltaje según el hardware
-
-5. **Sección "Rendimiento"**:
-   - **Slider de Stride**: Reduce puntos dibujados (mejora FPS)
-   - **Checkbox**: Mostrar tiempo de renderizado
-
-**Valores Predefinidos**:
-```cpp
-const int frecuencias[] = {
-    120, 240, 480, 960, 1440, 1920, 3840, 5760,
-    11520, 23040, 25000, 46080, 50000, 92160, 100000, 2000000
-};
-
-const int bauds[] = {
-    1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600,
-    115200, 230400, 250000, 460800, 500000, 921600, 1000000, 2000000
-};
-```
-
----
-
-### `Buffers.h`
-**Responsabilidad**: Estructuras de datos eficientes para señales en tiempo real.
-
-#### `ScrollBuffer<T>`
-**Propósito**: Buffer circular con ventana deslizante.
-
-**Características**:
-- **Capacidad**: Tamaño total del buffer interno
-- **View**: Tamaño de la ventana visible (últimas N muestras)
-- **Comportamiento**:
-  - Cuando se llena, elimina automáticamente las muestras más antiguas
-  - Mantiene siempre las últimas `view` muestras accesibles
-  - Acceso eficiente sin copias innecesarias
-
-**Métodos Principales**:
-```cpp
-void push(T value);              // Agrega una muestra
-void write(T* buffer, count);    // Agrega múltiples muestras
-uint32_t count() const;          // Número de muestras visibles
-T& front();                      // Primera muestra visible
-T& back();                       // Última muestra visible
-const T* data() const;           // Puntero a los datos (para ImPlot)
-```
-
-**Uso en el proyecto**:
-- `scrollX`: Marca de tiempo de cada muestra
-- `scrollY`: Valores de la señal original
-- `filter_scrollY`: Valores de la señal filtrada
-
-#### `Buffer<T>`
-**Propósito**: Buffer circular thread-safe para comunicación productor-consumidor.
-
-**Características**:
-- Protegido con mutexes
-- Lectura y escritura no bloqueante
-- Usado internamente por `Serial` (aunque no se ve explícitamente en el código analizado)
-
----
-
-### `Console.cpp` / `Console.h`
-**Responsabilidad**: Gestión de la consola de Windows.
-
-**Funcionalidad**:
-- Detecta si la aplicación fue lanzada desde la consola o como aplicación GUI
-- Oculta la consola automáticamente al iniciar (mejora la experiencia de usuario)
-- Permite restaurar la consola para debugging
-
-**Métodos**:
-```cpp
-Console::IsOwn()        // ¿La consola pertenece a este proceso?
-Console::Hide(persist)  // Oculta la consola
-Console::Show(persist)  // Muestra la consola
-```
-
-**Caso de Uso**:
-```cpp
-Console console;
-if (console.IsOwn())
-    console.Hide(true);  // Solo oculta si la consola es propia del proceso
-```
-
----
-
-### `Widgets.h`
-**Responsabilidad**: Componentes de UI reutilizables.
-
-#### `select_menu<Container>()`
-**Propósito**: Crea un menú desplegable con opciones dinámicas.
-
-**Parámetros**:
-- `title`: Texto del menú
-- `selection`: Referencia al valor seleccionado
-- `get_values`: Función que retorna el contenedor de opciones
-- `to_string`: Función que convierte cada opción a string
-- `empty_msg`: Mensaje cuando no hay opciones
-
-**Ejemplo de Uso**:
-```cpp
-select_menu("Puerto", settings->port, 
-            EnumerateComPorts, 
-            [](string s) { return s; },
-            "No hay dispositivos");
-```
-
-#### `combo<Container>()`
-**Propósito**: Similar a `select_menu` pero con estilo de combo box.
-
-**Uso en el proyecto**:
-- Selector de frecuencia de muestreo
-- Selector de velocidad de baudios
-- Selector de puerto COM
+SerialPlotter se compone de los siguientes módulos principales:
+
+1. **Módulo de Configuración**: Maneja la configuración de la aplicación y las preferencias del usuario.
+2. **Módulo de Interfaz Gráfica**: Responsable de renderizar la UI usando ImGui y OpenGL.
+3. **Módulo Serial**: Encargado de la comunicación entre el PC y el microcontrolador vía puerto serie.
+4. **Módulo FFT**: Realiza el cálculo de la Transformada Rápida de Fourier sobre los datos de entrada.
+5. **Módulo de Filtros**: Aplica filtros IIR a las señales para su análisis.
+6. **Módulo de Buffers**: Maneja los buffers circulares para el almacenamiento temporal de datos.
+
+Cada módulo se implementa en archivos `.cpp` y sus correspondientes headers `.h` en el directorio `src/`. Los detalles de implementación se describen en las secciones siguientes.
 
 ---
 
 ## Flujo de Datos
+
+El flujo de datos en SerialPlotter se describe a través de los siguientes pasos:
+
+1. **Adquisición**: Los datos son adquiridos desde el puerto serie por el `SerialWorker`.
+2. **Almacenamiento**: Los datos adquiridos se almacenan en buffers circulares gestionados por el `BufferManager`.
+3. **Procesamiento**: Los datos son procesados en bloques por el `FFTAnalyzer` y el `IIRFilter`.
+4. **Visualización**: Los resultados son enviados a la UI para su visualización en tiempo real.
+5. **Retransmisión**: Opcionalmente, los datos filtrados pueden ser retransmitidos al microcontrolador.
+
+Este ciclo se repite continuamente durante la operación normal de la aplicación.
 
 ### Recepción de Señal
 ```
@@ -481,20 +195,25 @@ Microcontrolador ? Puerto COM ? Serial::read()
                               TransformSample()
                               (ADC ? Voltaje)
                                      ?
-                    ??????????????????????????????????
-                    ?                                ?
-             scrollY (original)              Filtro IIR
-                    ?                                ?
-              Gráfica "Entrada"         filter_scrollY (filtrada)
-                                                     ?
-                                         Gráfica "Salida"
-                                                     ?
-                                       InverseTransformSample()
-                                         (Voltaje ? ADC)
-                                                     ?
-                                            Serial::write()
-                                                     ?
-                                            Microcontrolador
+                    ????????????????????????????????????
+                    ?                                  ?
+             scrollY (original)                 Filtro IIR
+                    ?                                  ?
+              Gráfica "Entrada"          filter_scrollY (filtrada)
+                    ?                                  ?
+                    ?                      Gráfica "Salida"
+                    ?                                  ?
+                    ?                    InverseTransformSample()
+                    ?                      (Voltaje ? ADC)
+                    ?                                  ?
+                    ?                         Serial::write()
+                    ?                                  ?
+                    ?                         Microcontrolador
+                    ?
+              Modo Freeze:
+              ? Snapshot
+         frozen_dataX/Y
+         (análisis sin perder datos)
 ```
 
 ### Análisis FFT
@@ -513,124 +232,132 @@ scrollY (últimas N muestras)
     FFT::Plot()
          ?
    Gráfica "Espectro"
+   
+   (Solo activo en modo en vivo)
 ```
 
 ---
 
 ## Compilación y Configuración
 
-### Dependencias del Sistema
-- **Windows 10/11** (para API de serial)
-- **Visual Studio 2019+** o **MinGW-w64** con soporte C++20
-- **CMake 3.20+**
-- **Ninja** (generador de build)
+Para compilar y configurar SerialPlotter, siga los siguientes pasos:
 
-### Comandos de Compilación
+1. Asegúrese de tener instaladas todas las dependencias y bibliotecas externas requeridas.
+2. Clone el repositorio del proyecto desde GitHub.
+3. Cree un directorio de compilación (por ejemplo, `build/`) dentro del directorio raíz del proyecto.
+4. Desde el directorio de compilación, ejecute CMake para configurar el proyecto:
+   ```bash
+   cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release ..
+   ```
+5. Compile el proyecto usando el comando:
+   ```bash
+   ninja
+   ```
+6. Ejecute la aplicación generada:
+   ```bash
+   ./SerialPlotter
+   ```
 
-#### Debug
-```bash
-cmake -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-debug
-.\build-debug\SerialPlotter.exe
-```
-
-#### Release
-```bash
-cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release
-.\build-release\SerialPlotter.exe
-```
-
-### Configuración de CMake
-
-#### `CMakeLists.txt` Principal
-```cmake
-cmake_minimum_required(VERSION 3.20)
-project(SerialPlotter)
-
-set(CMAKE_CXX_STANDARD 20)
-set(BUILD_SHARED_LIBS FALSE)  # Linkeo estático
-
-add_subdirectory(extern)      # Compila bibliotecas externas
-
-add_executable(SerialPlotter
-    glad.c
-    src/main.cpp
-    src/FFT.cpp
-    # ... otros archivos
-)
-
-target_link_libraries(SerialPlotter PRIVATE
-    glfw
-    imgui
-    implot
-    iir::iir_static
-    fftw3
-)
-```
-
-#### Configuración de FFTW3
-Opciones importantes en `extern/fftw3/CMakeLists.txt`:
-```cmake
-option(BUILD_SHARED_LIBS "Build shared libraries" ON)
-option(ENABLE_SSE2 "Compile with SSE2 support" OFF)
-option(ENABLE_AVX "Compile with AVX support" OFF)
-option(ENABLE_AVX2 "Compile with AVX2 support" OFF)
-```
-
-**Recomendación**: Activar `ENABLE_AVX2` si el procesador lo soporta para máximo rendimiento.
+Consulte la documentación de CMake y Ninja para más detalles sobre la configuración y compilación del proyecto.
 
 ---
 
 ## Detalles Técnicos
 
-### Optimizaciones de Rendimiento
+### Comunicación Serial
 
-#### 1. **Stride en Gráficas**
-- **Problema**: Renderizar miles de puntos en tiempo real es costoso
-- **Solución**: Parámetro `stride` que dibuja solo 1 de cada N puntos
-- **Configuración**: `Settings::stride` (potencia de 2: 1, 2, 4, 8...)
-- **Trade-off**: Mayor stride = mejor FPS pero menor detalle
+La comunicación serial se realiza a través de la clase `SerialPort`, que encapsula la API de Windows para el manejo de puertos serie. La clase maneja la configuración de la conexión (baud rate, paridad, bits de datos) y proporciona métodos para leer y escribir datos del puerto.
 
-#### 2. **FFT en Hilo Separado**
-- **Motivo**: `fftw_execute()` puede tomar varios milisegundos
-- **Implementación**: 
-  - `AnalysisWorker()` corre en hilo propio
-  - Activado solo cuando la pestaña "Análisis" está visible
-  - Actualización cada 100ms (no en cada frame)
+### `MainWindow.cpp` / `MainWindow.h`
+**Responsabilidad**: Ventana principal y lógica central de la aplicación.
 
-#### 3. **Framerate Adaptativo**
-- **Comportamiento**:
-  - Ventana enfocada: 60 FPS (con VSync)
-  - Ventana desenfocada: 20 FPS
-  - Ventana minimizada: 0 FPS (espera de eventos)
-- **Beneficio**: Reduce consumo de CPU/GPU cuando no es necesario
+**Componentes**:
 
-#### 4. **Buffers Circulares**
-- **Ventaja**: No hay realocaciones de memoria
-- **`ScrollBuffer`**: Solo mueve un offset, los datos permanecen en su lugar
-- **Acceso O(1)**: ImPlot puede acceder directamente al buffer con stride
+#### **Gestión de Datos**
+- `ScrollBuffer<double>* scrollX, *scrollY, *filter_scrollY`: Buffers circulares para las muestras
+- `FFT* fft`: Motor de análisis espectral
+- `Serial serial`: Interfaz de comunicación serie
 
-### Limitaciones Conocidas
+#### **Modo Freeze (Congelado)**
+El modo freeze permite pausar la visualización sin detener la adquisición:
 
-#### 1. **Desfase al Arrastrar Ventana**
-- **Causa**: Windows bloquea el bucle de mensajes durante operaciones modales
-- **Efecto**: Los hilos de trabajo siguen corriendo pero la interfaz no se actualiza
-- **Posible solución**: Pausar captura durante operaciones de ventana
+**Variables de estado**:
+- `bool frozen`: Indica si está en modo congelado
+- `frozen_left_limit, frozen_right_limit`: Límites de zoom independientes para modo congelado
+- `frozen_down_limit, frozen_up_limit`: Límites verticales independientes
+- `frozen_size`: Cantidad de muestras en el snapshot
+- `frozen_dataX, frozen_dataY, frozen_dataY_filtered`: Vectores con copia de datos congelados
 
-#### 2. **Solo Windows**
-- **Razón**: Usa API nativa de Windows para serial (`CreateFile`, `ReadFile`, etc.)
-- **Portabilidad**: Requeriría implementación con librerías cross-platform (ej: Boost.Asio)
+**Funcionamiento**:
+1. Al presionar "Congelar", se copia un snapshot completo de los datos actuales
+2. La visualización se detiene, permitiendo zoom y análisis detallado
+3. El SerialWorker continúa capturando datos en segundo plano (protegido por data_mutex)
+4. Al presionar "Reanudar", vuelve al modo en vivo sin pérdida de datos
 
-#### 3. **Frecuencias de Muestreo Altas**
-- **Limitación**: El puerto serie puede ser un cuello de botella
-- **Cálculo**: A 115200 baudios ? ~11520 bytes/s ? máx ~11.5 kHz (asumiendo 1 byte/muestra)
-- **Solución para frecuencias mayores**: Usar USB nativo o compresión
+#### **Hilos de Trabajo**
+1. **Serial Worker** (`SerialWorker()`):
+   - Lee datos del puerto serie
+   - Transforma valores ADC (0-255) a voltaje (-6V a +6V)
+   - Aplica filtro seleccionado
+   - Escribe datos filtrados de vuelta al puerto
+   - **Protección**: Usa data_mutex durante freeze/unfreeze
+   - **Frecuencia**: Limitada por la velocidad del puerto serie
+
+2. **Analysis Worker** (`AnalysisWorker()`):
+   - Calcula FFT de las últimas N muestras
+   - Identifica frecuencia dominante y offset DC
+   - **Activación**: Solo en modo en vivo (pausado durante freeze)
+   - **Frecuencia**: ~10 Hz (cada 100ms)
+
+#### **Interfaz Gráfica** (`Draw()`)
+Renderiza tres secciones principales:
+
+1. **Panel Lateral (Sidebar)**:
+   - Selector de puerto COM
+   - Configuración de frecuencia de muestreo y baud rate
+   - Mapeo ADC (máximo/mínimo)
+   - Stride (optimización de renderizado)
+   - Botones Conectar/Desconectar
+   - **Botón Congelar/Reanudar**: Alterna entre modo en vivo y congelado
+
+2. **Gráfica de Entrada**:
+   - Muestra la señal original recibida
+   - Eje X: Tiempo (con formato métrico: ms, s)
+   - Eje Y: Voltaje (con formato métrico: mV, V)
+   - Zoom sincronizado entre Entrada y Salida en modo en vivo
+   - Zoom independiente en modo congelado
+
+3. **Sección de Filtro** (plegable):
+   - **Gráfica de Salida**: Señal filtrada
+   - **Selectores**: Ninguno / Pasa-bajos / Pasa-altos
+   - **Slider**: Frecuencia de corte
+   - Zoom sincronizado con gráfica de Entrada
+
+4. **Sección de Análisis** (plegable):
+   - **Espectro de frecuencias**: Gráfica logarítmica
+   - **Información**: Frecuencia dominante y offset DC
+   - Solo se actualiza en modo en vivo
+
+5. **Sección de Información** (inferior del sidebar):
+   - Tiempo transcurrido
+   - Indicador visual "[CONGELADO]" cuando está activo
+   - Métricas de rendimiento (FPS, ms/frame si está habilitado)
+
+**Transformación de Muestras**:
+```cpp
+// ADC (0-255) ? Voltaje (-6V a +6V)
+double voltage = (sample - minimum) * map_factor - 6;
+
+// Voltaje ? ADC
+uint8_t sample = round((voltage + 6) * (maximum - minimum) / 12.0 + minimum);
+
+```
 
 ### Seguridad de Hilos
 
 #### Variables Compartidas Protegidas
 ```cpp
+std::mutex data_mutex;               // Protege scrollX, scrollY, filter_scrollY durante freeze/unfreeze
 std::mutex analysis_mutex;           // Protege acceso a FFT
 std::condition_variable analysis_cv; // Señalización entre hilos
 ```
@@ -639,68 +366,19 @@ std::condition_variable analysis_cv; // Señalización entre hilos
 1. **Producer-Consumer**: Serial Worker ? Buffers ? Main Thread
 2. **Conditional Wait**: Analysis Worker espera notificación para computar FFT
 3. **Atomic Flags**: `do_serial_work`, `do_analysis_work` para detención limpia
+4. **Lock Guard**: Protección de snapshot en modo freeze
 
-### Configuración de Filtros
-
-#### Filtro Pasa-Bajos (Butterworth de 8º Orden)
+#### Escenario de Freeze
 ```cpp
-Iir::Butterworth::LowPass<8> lowpass_filter;
-lowpass_filter.setup(sampling_rate, cutoff_frequency);
-```
-- **Orden 8**: Pendiente de ~48 dB/octava
-- **Tipo Butterworth**: Respuesta plana en banda de paso
-- **Rango típico**: 1 Hz - `sampling_rate/4`
+// Al congelar (UI Thread):
+{
+    std::lock_guard<std::mutex> lock(data_mutex);
+    // Copiar snapshot de scrollX, scrollY, filter_scrollY
+    // SerialWorker no puede escribir durante esta operación
+}
 
-#### Filtro Pasa-Altos (Butterworth de 8º Orden)
-```cpp
-Iir::Butterworth::HighPass<8> highpass_filter;
-highpass_filter.setup(sampling_rate, cutoff_frequency);
-```
-- **Rango típico**: `sampling_rate/4` - `sampling_rate/2 - 1`
-
-**Nota**: Los filtros se resetean (`reset()`) al cambiar parámetros para evitar transitorios.
-
----
-
-## Glosario de Términos
-
-| Término | Significado |
-|---------|-------------|
-| **FFT** | Fast Fourier Transform - Algoritmo eficiente para calcular la DFT |
-| **DFT** | Discrete Fourier Transform - Transforma señal temporal a frecuencial |
-| **IIR** | Infinite Impulse Response - Tipo de filtro digital recursivo |
-| **ADC** | Analog-to-Digital Converter - Convierte señal analógica a digital |
-| **DSP** | Digital Signal Processing - Procesamiento de señales digitales |
-| **ImGui** | Immediate Mode GUI - Paradigma de interfaz sin estado retenido |
-| **VSync** | Vertical Synchronization - Sincroniza FPS con tasa de refresco |
-| **Stride** | Paso o salto entre elementos procesados |
-| **Baudios** | Bits por segundo en comunicación serial |
-
----
-
-## Referencias
-
-### Documentación de Bibliotecas
-- [FFTW Manual](http://www.fftw.org/fftw3_doc/)
-- [ImGui GitHub](https://github.com/ocornut/imgui)
-- [ImPlot Documentation](https://github.com/epezent/implot/wiki)
-- [iir1 Examples](https://github.com/berndporr/iir1/tree/master/demo)
-- [GLFW Documentation](https://www.glfw.org/documentation.html)
-
-### Algoritmos y Conceptos
-- [Butterworth Filters (Wikipedia)](https://en.wikipedia.org/wiki/Butterworth_filter)
-- [Discrete Fourier Transform](https://en.wikipedia.org/wiki/Discrete_Fourier_transform)
-- [Serial Communication](https://en.wikipedia.org/wiki/Serial_communication)
-
----
-
-## Autor y Licencia
-
-**Proyecto**: SerialPlotter  
-**Repositorio**: https://github.com/c-mateo/SerialPlotter  
-**Autor**: c-mateo  
-**Propósito**: Proyecto académico de Procesamiento Digital de Señales
-
----
-
-*Última actualización: [Fecha de generación de este documento]*
+// SerialWorker sigue corriendo:
+{
+    std::lock_guard<std::mutex> lock(data_mutex);
+    scrollY->push(valor);  // Continúa acumulando datos
+}

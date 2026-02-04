@@ -1,5 +1,22 @@
-// Este archivo está basado en un ejemplo de Omar Cornut
+// main.cpp - Punto de entrada principal de la aplicación
+//
+// Este archivo está basado en un ejemplo de Omar Cornut (creador de ImGui)
 // Fuente: https://github.com/ocornut/imgui/blob/master/examples/example_glfw_opengl3/main.cpp
+//
+// Funcionalidad:
+// - Inicialización de GLFW (ventana y contexto OpenGL)
+// - Inicialización de ImGui e ImPlot
+// - Configuración del tema visual (oscuro con acentos verdes #1CC809)
+// - Bucle principal de renderizado con optimizaciones de rendimiento
+// - Gestión de eventos de ventana (resize, minimize, focus)
+// - Ocultación automática de consola en Windows
+//
+// Arquitectura del bucle principal:
+// 1. Procesamiento de eventos (glfwPollEvents / glfwWaitEvents)
+// 2. Limitación de FPS cuando la ventana no tiene foco (ahorro de CPU)
+// 3. Inicio de frame ImGui
+// 4. Renderizado de MainWindow y SettingsWindow
+// 5. Renderizado OpenGL y swap de buffers
 
 // The MIT License (MIT)
 //
@@ -18,6 +35,7 @@ SettingsWindow settings_window(settings);
 
 MainWindow mainWindow(width, height, settings, settings_window);
 
+// Callback: actualizar dimensiones cuando la ventana cambia de tamaño
 void window_resize(GLFWwindow*, int w, int h) {
     width = w;
     height = h;
@@ -25,11 +43,13 @@ void window_resize(GLFWwindow*, int w, int h) {
 }
 
 bool minimized = false;
+// Callback: detectar cuando la ventana se minimiza (para pausar renderizado)
 void window_minimized(GLFWwindow*, int _minimized) {
     minimized = _minimized;
 }
 
 bool focused = true;
+// Callback: detectar cuando la ventana pierde el foco (para limitar FPS)
 void window_focused(GLFWwindow*, int _focused) {
     focused = _focused;
 }
@@ -37,15 +57,16 @@ void window_focused(GLFWwindow*, int _focused) {
 // Main code
 int main(int, char**)
 {
-    // Ocultar consola
+    // Ocultar consola de Windows si pertenece a este proceso
     Console console;
     if (console.IsOwn())
         console.Hide(true);
 
+    // Inicializar GLFW
     if (!glfwInit())
         return -1;
 
-    // Decide GL+GLSL versions
+    // Configurar versión de OpenGL según la plataforma
 #if defined(IMGUI_IMPL_OPENGL_ES2)
     // GL ES 2.0 + GLSL 100
         const char* glsl_version = "#version 100";
@@ -60,7 +81,7 @@ int main(int, char**)
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // Required on Mac
 #else
-    // GL 3.3 + GLSL 330
+    // GL 3.3 + GLSL 330 (Windows/Linux)
     const char* glsl_version = "#version 330";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -68,11 +89,12 @@ int main(int, char**)
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
 #endif
 
-    // Create window with graphics context
+    // Crear ventana con contexto gráfico
     GLFWwindow* window = glfwCreateWindow(width, height, "Procesamiento Digital de Señales", nullptr, nullptr);
     if (window == nullptr)
         return -1;
 
+    // Registrar callbacks de eventos
     glfwSetWindowSizeCallback(window, window_resize);
     glfwSetWindowIconifyCallback(window, window_minimized);
     glfwSetWindowFocusCallback(window, window_focused);
@@ -86,11 +108,13 @@ int main(int, char**)
     glfwGetFramebufferSize(window, &width, &height);
     mainWindow.SetSize(width, height);
 
+    // Cargar funciones de OpenGL con GLAD
     if (!gladLoadGL()) {
         glfwTerminate();
         return -1;
     }
 
+    // Inicializar ImGui e ImPlot
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
@@ -104,8 +128,9 @@ int main(int, char**)
     
     ImGuiStyle& style = ImGui::GetStyle();
     
-    // #111112 = RGB(17, 17, 18) -> Convertir a float: 17/255 = 0.067
-    // #1CC809 = RGB(28, 200, 9) -> Convertir a float: (28/255, 200/255, 9/255) = (0.110, 0.784, 0.035)
+    // Conversión de colores HEX a RGB float (0-1):
+    // #111112 = RGB(17, 17, 18) -> (0.067, 0.067, 0.071)
+    // #1CC809 = RGB(28, 200, 9) -> (0.110, 0.784, 0.035)
     
     // Fondos y bordes
     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.067f, 0.067f, 0.071f, 1.0f);           // #111112
@@ -156,7 +181,7 @@ int main(int, char**)
     style.Colors[ImGuiCol_SeparatorHovered] = ImVec4(0.110f, 0.784f, 0.035f, 0.7f);   // #1CC809
     style.Colors[ImGuiCol_SeparatorActive] = ImVec4(0.110f, 0.784f, 0.035f, 1.0f);    // #1CC809
 
-    style.WindowMenuButtonPosition = ImGuiDir_None;
+    style.WindowMenuButtonPosition = ImGuiDir_None;  // Ocultar botón de menú de ventana
 
     // Color de fondo negro para ventana OpenGL
     ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 1.00f);
@@ -168,13 +193,13 @@ int main(int, char**)
     // Bucle principal de renderizado
     while (!glfwWindowShouldClose(window))
     {
-        // Esperar eventos si la ventana está minimizada (ahorro de CPU)
+        // Optimización: esperar eventos si la ventana está minimizada (ahorro de CPU)
         if (minimized)
             glfwWaitEvents();
         else
             glfwPollEvents();
 
-        // Limitar FPS cuando la ventana no tiene foco (ahorro de CPU)
+        // Optimización: limitar FPS a 20 cuando la ventana no tiene foco (ahorro de CPU)
         if (!focused) {
             if (minimized_frametime > 0.02)
                 std::this_thread::sleep_for(std::chrono::duration<double>(minimized_frametime - 0.02));
@@ -185,24 +210,29 @@ int main(int, char**)
             last_time = glfwGetTime();
         }
 
-        // Start the Dear ImGui frame
+        // Iniciar frame de ImGui
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        // Dibujar interfaz de usuario
         mainWindow.Draw();
         settings_window.Draw();
 
+        // Renderizar OpenGL
         glViewport(0, 0, width, height);
         glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
         glClear(GL_COLOR_BUFFER_BIT);
 
+        // Renderizar ImGui
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
+        // Intercambiar buffers (presentar frame)
         glfwSwapBuffers(window);
     }
 
+    // Limpieza y cierre
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImPlot::DestroyContext();

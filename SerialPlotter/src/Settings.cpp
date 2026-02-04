@@ -1,3 +1,9 @@
+// Settings.cpp - Implementación de ventana de configuración y widgets auxiliares
+//
+// NOTA IMPORTANTE: Esta ventana de configuración está DEPRECATED.
+// Todas las opciones ahora están integradas directamente en el sidebar
+// de MainWindow para mejor accesibilidad y flujo de trabajo.
+
 #include <imgui.h>
 
 #include "Serial.h"
@@ -5,23 +11,27 @@
 
 using namespace std::string_literals;
 
+// Arrays de opciones disponibles
 const int bauds[] = { 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 230400, 250000, 460800, 500000, 921600, 1000000, 2000000 };
 const int frecuencias[] = { 120, 240, 480, 960, 1440, 1920, 3840, 5760, 11520, 23040, 25000, 46080, 50000, 92160, 100000, 2000000 };
 
 #include "Widgets.h"
 
+// Widget combo para seleccionar frecuencia de muestreo
 void ComboFrecuenciaMuestreo(int& selected) {
     std::function to_string = [](int n) { return std::to_string(n); };
 
     combo("Frecuencia", selected, frecuencias, to_string);
 }
 
+// Widget combo para seleccionar velocidad de comunicación serial
 void ComboBaudRate(int& selected) {
     std::function to_string = [](int n) { return std::to_string(n); };
 
     combo("Velocidad", selected, bauds, to_string);
 }
 
+// Widget combo para seleccionar puerto COM
 void ComboPuertos(std::string& selected_port) {
     auto puertos = EnumerateComPorts();
     std::function to_string = [](std::string s) { return s; };
@@ -37,9 +47,10 @@ void SettingsWindow::Toggle() {
     open = !open;
 }
 
-// NOTA: Esta ventana ya no se utiliza activamente.
+// DEPRECATED: Esta ventana ya no se utiliza activamente.
 // Todas las opciones de configuración ahora están integradas
 // directamente en el sidebar de MainWindow para acceso rápido.
+// Se mantiene este código por compatibilidad pero no se dibuja.
 void SettingsWindow::Draw() {
     using namespace ImGui;
     static int stride_exp = 2;
@@ -49,12 +60,19 @@ void SettingsWindow::Draw() {
 
     Begin("Configuración", &open);
 
+    // Selector de frecuencia de muestreo
     ComboFrecuenciaMuestreo(settings.sampling_rate);
+    
+    // Selector de velocidad de comunicación
     ComboBaudRate(settings.baud_rate);
+    
+    // Selector de puerto COM
     ComboPuertos(settings.port);
 
+    // Sincronizar cantidad de muestras con frecuencia de muestreo
     settings.samples = settings.sampling_rate;
 
+    // Sección de mapeo ADC a voltaje (colapsable)
     if (TreeNode("Mapeo")) {
         SliderInt("Máximo", &settings.maximum, 0, 255);
         SliderInt("Mínimo", &settings.minimum, 0, 255);
@@ -62,7 +80,9 @@ void SettingsWindow::Draw() {
         TreePop();
     }
 
+    // Sección de optimización de rendimiento (colapsable)
     if (TreeNode("Rendimiento")) {
+        // Stride exponencial (2^n) para reducir puntos dibujados
         if (SliderInt("Stride", &stride_exp, 0, 10)) {
             settings.stride = (int)exp2(stride_exp);
             settings.byte_stride = sizeof(double) * settings.stride;

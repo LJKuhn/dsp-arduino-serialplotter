@@ -618,29 +618,28 @@ void MainWindow::Draw()
             // Configurar ejes según el estado de freeze
             if (frozen) {
                 // Modo congelado: zoom manual independiente (usa frozen_*_limit)
-                // Nota: ImAxes_X1/Y1 es equivalente a ImAxis_X1/Y1 en versiones recientes de ImPlot
-                ImPlot::SetupAxisLinks(ImAxes_X1, &frozen_left_limit, &frozen_right_limit);
-                ImPlot::SetupAxisLinks(ImAxes_Y1, &frozen_down_limit, &frozen_up_limit);
+                ImPlot::SetupAxisLinks(ImAxis_X1, &frozen_left_limit, &frozen_right_limit);
+                ImPlot::SetupAxisLinks(ImAxis_Y1, &frozen_down_limit, &frozen_up_limit);
                 
-                ImPlot::SetupAxisFormat(ImAxes_Y1, MetricFormatter, (void*)"V");
-                ImPlot::SetupAxisFormat(ImAxes_X1, MetricFormatter, (void*)"s");
+                ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
+                ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
-                ImPlot::SetupAxisLimits(ImAxes_Y1, frozen_down_limit, frozen_up_limit, ImGuiCond_Once);
-                ImPlot::SetupAxisLimits(ImAxes_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Once);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, frozen_down_limit, frozen_up_limit, ImGuiCond_Once);
+                ImPlot::SetupAxisLimits(ImAxis_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Once);
             }
             else {
                 // Modo en vivo: zoom sincronizado con gráfico de Entrada (comparten left/right/down/up_limit)
-                ImPlot::SetupAxisLinks(ImAxes_X1, &left_limit, &right_limit);
-                ImPlot::SetupAxisLinks(ImAxes_Y1, &down_limit, &up_limit);
+                ImPlot::SetupAxisLinks(ImAxis_X1, &left_limit, &right_limit);
+                ImPlot::SetupAxisLinks(ImAxis_Y1, &down_limit, &up_limit);
                 
-                ImPlot::SetupAxisFormat(ImAxes_Y1, MetricFormatter, (void*)"V");
-                ImPlot::SetupAxisFormat(ImAxes_X1, MetricFormatter, (void*)"s");
+                ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
+                ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
-                ImPlot::SetupAxisLimits(ImAxes_Y1, -7, 7, ImGuiCond_FirstUseEver);
-                ImPlot::SetupAxisLimits(ImAxes_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7, ImGuiCond_FirstUseEver);
+                ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
             }
 
-            ImPlot::SetupAxisLimitsConstraints(ImAxes_X1, 0, INFINITY);
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, INFINITY);
 
             // Dibujar línea filtrada avec color verde #1CC809
             if (dataX && dataY_filtered && current_draw_size > 0) {

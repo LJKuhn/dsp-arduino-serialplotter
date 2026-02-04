@@ -2,10 +2,16 @@
 
 Este es un programa simple de DSP que intercambia información de señales con un microcontrolador mediante el puerto serie de la computadora.
 
-## Características
-- Obtiene una señal muestreada por el microcontrolador y la muestra.
-- Analiza la señal a partir de un FFT y dibuja sus armónicas.
-- Aplica un filtro a la señal, la grafica y envía de regreso al microcontrolador.
+## 🎯 **Características Principales**
+
+- **🔄 Procesamiento bidireccional**: ADC → PC → DAC en tiempo real
+- **📊 Análisis espectral**: FFT en tiempo real con FFTW3
+- **🔧 Filtros digitales**: Butterworth IIR de 8º orden (pasa-bajos, pasa-altos)
+- **📈 Visualización**: Gráficas de entrada y salida simultáneas
+- **❄️ Modo Congelar**: Pausa la visualización sin detener la adquisición de datos
+- **⚙️ Configuración**: Frecuencias y parámetros ajustables por interfaz
+- **🎛️ Generador de pruebas**: 6 tipos de señales automáticas para testing
+- **🖥️ Interfaz gráfica**: Construida con ImGui para una experiencia de usuario intuitiva
 
 ## Librerías utilizadas
 - [GLFW](https://github.com/glfw/glfw): A multi-platform library for OpenGL, OpenGL ES, Vulkan, window and input.
