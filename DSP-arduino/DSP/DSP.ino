@@ -34,7 +34,7 @@
 
 // Instancias de controladores
 ADCController adc;           // Controlador del ADC
-Timer1 timer1(3840.0);      // Timer a 3840 Hz para muestreo
+Timer1 timer1(11520.0);       // Timer a 11520 Hz para muestreo
 
 /**
  * Escribe un valor de 8 bits al DAC R2R usando PORTA completo
@@ -112,7 +112,7 @@ void setup()
    
    // Inicializar periféricos
    adc.begin(1);        // Iniciar ADC en canal 1
-   usart.begin(38400);    // Comunicación serie a 38400 baudios (sincronizado con SerialPlotter)
+   usart.begin(38400);    // Comunicación serie a 38400 baudios (sincronizado con SerialPlotter), probar con 115200
 
    // Configurar PORTA completo como salida para DAC (pines 22-29)
    // Arduino Mega 2560: PORTA = pines 22-29 (PA0-PA7)
