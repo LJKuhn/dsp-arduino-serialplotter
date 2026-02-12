@@ -2,14 +2,23 @@
 
 ## Descripción
 
-Este proyecto genera formas de onda automáticamente cambiando cada 30 segundos entre diferentes tipos: **triangular**, **cuadrada** y **senoidal**. Está optimizado para Arduino Uno usando un DAC R2R de 6 bits.
+Este proyecto genera formas de onda automáticamente cambiando cada **15 segundos** entre **12 tipos diferentes**: **triangular**, **cuadrada** y **senoidal** en **4 frecuencias** (2Hz, 10Hz, 80Hz, 300Hz). Está optimizado para Arduino Uno usando un DAC R2R de 6 bits.
 
 ## Características
 
-### **🔄 Ciclo Automático:**
-- **30 segundos:** Onda Triangular
-- **30 segundos:** Onda Cuadrada  
-- **30 segundos:** Onda Senoidal
+### **🔄 Ciclo Automático (12 estados × 15s = 3 minutos):**
+1. **15s:** Triangular 2Hz (1V-4V)
+2. **15s:** Triangular 10Hz (0V-5V)  
+3. **15s:** Triangular 80Hz (0V-5V)
+4. **15s:** Triangular 300Hz (0V-5V)
+5. **15s:** Cuadrada 2Hz (1V-4V)
+6. **15s:** Cuadrada 10Hz (0V-5V)
+7. **15s:** Cuadrada 80Hz (0V-5V)
+8. **15s:** Cuadrada 300Hz (0V-5V)
+9. **15s:** Senoidal 2Hz (1V-4V)
+10. **15s:** Senoidal 10Hz (0V-5V)
+11. **15s:** Senoidal 80Hz (0V-5V)
+12. **15s:** Senoidal 300Hz (0V-5V)
 - **Repetir indefinidamente...**
 
 ### **📊 Especificaciones Técnicas:**

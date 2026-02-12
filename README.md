@@ -26,8 +26,8 @@ Sistema completo de procesamiento digital de señales en tiempo real que combina
   - ADC: Pin A1, DAC: Pines 22-29 (PORTA)
   - Comunicación bidireccional no bloqueante
 - **Arduino_Uno_Auto_Waveforms/**: Generador de señales de prueba
-  - 6 estados: Triangular/Cuadrada/Senoidal × (2Hz/300Hz) × (1V-4V/0V-5V)
-  - Cambio automático cada 30 segundos
+  - 12 estados: Triangular/Cuadrada/Senoidal × (2Hz/10Hz/80Hz/300Hz) × (1V-4V/0V-5V)
+  - Cambio automático cada 15 segundos
 
 ### **SerialPlotter/**
 - Interfaz gráfica en C++ con ImGui

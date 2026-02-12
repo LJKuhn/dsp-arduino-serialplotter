@@ -2,20 +2,26 @@
 
 ## 🎯 **Descripción**
 
-Sistema avanzado que genera **6 tipos diferentes de señales** de forma automática, cambiando cada 30 segundos en un ciclo repetitivo. Cada señal tiene **frecuencia y rango de voltaje específicos** para pruebas completas de sistemas DSP.
+Sistema avanzado que genera **12 tipos diferentes de señales** de forma automática, cambiando cada **15 segundos** en un ciclo repetitivo. Cada señal tiene **frecuencia y rango de voltaje específicos** para pruebas completas de sistemas DSP.
 
-## 📊 **Ciclo de Señales (6 estados × 30s = 3 minutos)**
+## 📊 **Ciclo de Señales (12 estados × 15s = 3 minutos)**
 
 | Estado | Forma      | Frecuencia | Rango Voltaje | Offset | Amplitud | Descripción |
 |--------|------------|------------|---------------|---------|----------|-------------|
 | **0**  | Triangular | **2 Hz**   | **1V - 4V**   | 1V     | 3V       | Señal lenta, rango medio |
-| **1**  | Triangular | **300 Hz** | **0V - 5V**   | 0V     | 5V       | Señal rápida, rango completo |
-| **2**  | Cuadrada   | **2 Hz**   | **1V - 4V**   | 1V     | 3V       | Señal lenta, rango medio |
-| **3**  | Cuadrada   | **300 Hz** | **0V - 5V**   | 0V     | 5V       | Señal rápida, rango completo |
-| **4**  | Senoidal   | **2 Hz**   | **1V - 4V**   | 1V     | 3V       | Señal lenta, rango medio |
-| **5**  | Senoidal   | **300 Hz** | **0V - 5V**   | 0V     | 5V       | Señal rápida, rango completo |
+| **1**  | Triangular | **10 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media, rango completo |
+| **2**  | Triangular | **80 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media-alta, rango completo |
+| **3**  | Triangular | **300 Hz** | **0V - 5V**   | 0V     | 5V       | Señal rápida, rango completo |
+| **4**  | Cuadrada   | **2 Hz**   | **1V - 4V**   | 1V     | 3V       | Señal lenta, rango medio |
+| **5**  | Cuadrada   | **10 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media, rango completo |
+| **6**  | Cuadrada   | **80 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media-alta, rango completo |
+| **7**  | Cuadrada   | **300 Hz** | **0V - 5V**   | 0V     | 5V       | Señal rápida, rango completo |
+| **8**  | Senoidal   | **2 Hz**   | **1V - 4V**   | 1V     | 3V       | Señal lenta, rango medio |
+| **9**  | Senoidal   | **10 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media, rango completo |
+| **10** | Senoidal   | **80 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media-alta, rango completo |
+| **11** | Senoidal   | **300 Hz** | **0V - 5V**   | 0V     | 5V       | Señal rápida, rango completo |
 
-**Después del estado 5, vuelve automáticamente al estado 0.**
+**Después del estado 11, vuelve automáticamente al estado 0.**
 
 ## ⚡ **Especificaciones Técnicas**
 
