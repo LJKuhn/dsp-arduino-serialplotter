@@ -118,13 +118,13 @@ public:
         // Probamos cada prescaler hasta encontrar uno que dé un OCR1A razonable
         
         const uint16_t prescalers[] = {1, 8, 64, 256, 1024};
-        const uint16_t F_CPU = 16000000;  // 16 MHz
+        const uint32_t FREQ_CPU = 16000000UL;  // 16 MHz - usamos nombre diferente para evitar conflicto
         
         for (int i = 0; i < 5; i++) {
             prescaler = prescalers[i];
             
             // Calcular OCR1A teórico para este prescaler
-            float ocr1a_float = (F_CPU / (prescaler * frecuencia)) - 1;
+            float ocr1a_float = (FREQ_CPU / (prescaler * frecuencia)) - 1;
             valor_comparacion = (uint16_t)ocr1a_float;
             
             // ¿Es un valor razonable? (entre 100 y 65000)
@@ -134,7 +134,7 @@ public:
         }
         
         // VERIFICACIÓN: Calcular frecuencia real conseguida
-        float frecuencia_real = (float)F_CPU / (prescaler * (valor_comparacion + 1));
+        float frecuencia_real = (float)FREQ_CPU / (prescaler * (valor_comparacion + 1));
         float error_porcentual = abs((frecuencia_real - frecuencia) / frecuencia) * 100.0;
         
         // En un sistema real, aquí imprimiríamos los resultados:

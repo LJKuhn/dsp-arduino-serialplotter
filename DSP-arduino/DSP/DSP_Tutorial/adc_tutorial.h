@@ -223,3 +223,37 @@ public:
  * - Sobran 156 µs para procesamiento = sistema muy estable
  * - La interrupción ADC_vect se ejecuta cuando termina la conversión
  */
+
+// ============================================================================
+// NOTA SOBRE IMPLEMENTACIONES
+// ============================================================================
+
+/**
+ * 📁 ORGANIZACIÓN DEL CÓDIGO:
+ * 
+ * ✅ ESTE ARCHIVO (adc_tutorial.h):
+ * - Contiene SOLO declaraciones de la clase
+ * - Comentarios educativos sobre la interfaz
+ * - Explicaciones teóricas del hardware ADC
+ * 
+ * ✅ ARCHIVO COMPLEMENTARIO (adc_tutorial.cpp):
+ * - Contiene TODAS las implementaciones
+ * - Comentarios línea por línea del código
+ * - Explicaciones de registros y algoritmos
+ * 
+ * ✅ ARCHIVO PRINCIPAL (DSP_Tutorial.ino):
+ * - Contiene la función ISR(ADC_vect)
+ * - Lógica de aplicación principal
+ * - Conexión entre componentes
+ * 
+ * ¿POR QUÉ ESTA SEPARACIÓN?
+ * - ESTÁNDAR C++: Declaraciones en .h, implementaciones en .cpp
+ * - COMPILACIÓN: Más eficiente para proyectos grandes
+ * - MANTENIMIENTO: Cambios en implementación no afectan la interfaz
+ * - REUTILIZACIÓN: El .h se puede incluir en múltiples proyectos
+ * 
+ * PARA COMPILAR:
+ * 1. Incluir este archivo: #include "adc_tutorial.h"
+ * 2. Agregar adc_tutorial.cpp al proyecto
+ * 3. Implementar ISR(ADC_vect) en el archivo principal
+ */

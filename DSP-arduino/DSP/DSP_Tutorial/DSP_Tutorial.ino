@@ -28,10 +28,10 @@
 // Los #include le dicen al compilador "incluye el código de otro archivo aquí"
 // Es como copiar y pegar el contenido de otro archivo en este punto
 
-#include "adc.h"       // Contiene la clase para controlar el ADC (Analog-to-Digital Converter)
-#include "timer1.h"    // Contiene la clase para configurar el Timer1 del microcontrolador
-#include "tablas.h"    // Contiene arrays con formas de onda precalculadas (seno, triangular, etc.)
-#include "usart.h"     // Contiene la clase para comunicación serie UART
+#include "adc_tutorial.h"       // Contiene la clase para controlar el ADC (Analog-to-Digital Converter)
+#include "timer1_tutorial.h"    // Contiene la clase para configurar el Timer1 del microcontrolador
+#include "tablas_tutorial.h"    // Contiene arrays con formas de onda precalculadas (seno, triangular, etc.)
+#include "usart_tutorial.h"     // Contiene la clase para comunicación serie UART
 #include <avr/io.h>    // Biblioteca estándar de AVR para acceso a registros del hardware
 #include <avr/interrupt.h>  // Biblioteca para manejar interrupciones del microcontrolador
 
@@ -49,6 +49,8 @@ ADCController adc;           // Objeto para controlar el convertidor analógico-
 Timer1 timer1(3840.0);      // Objeto para controlar el Timer1 a una frecuencia de 3840 Hz
                             // ¿Por qué 3840 Hz? Porque 3840 x 10 bits = 38400 baudios (velocidad serie)
                             // Esto sincroniza perfectamente el muestreo con la comunicación
+
+UsartTutorial usart;         // Objeto para comunicación serie con la PC
 
 // ============================================================================
 // FUNCIÓN WRITE: CONVERTIR NÚMERO DIGITAL A VOLTAJE ANALÓGICO
@@ -91,22 +93,19 @@ void write(uint8_t valor) {
 // ============================================================================
 // VARIABLES GLOBALES DEL SISTEMA
 // ============================================================================
-
-// ¿QUÉ SON LAS VARIABLES GLOBALES?
 // Variables que pueden ser accedidas desde cualquier función del programa
 // Se almacenan en la RAM del microcontrolador
 
 uint8_t counter = 0;        // Contador para recorrer las tablas de formas de onda
 uint8_t valor = 0;          // Valor actual que se escribirá al DAC (0-255)
 
-// ¿QUÉ SIGNIFICA "volatile"?
-// Le dice al compilador "esta variable puede cambiar inesperadamente"
+// Volatile para variables que pueden cambiar inesperadamenta
 // Es necesario cuando una variable es modificada por una interrupción
 // Sin "volatile", el compilador podría optimizar incorrectamente el código
 volatile bool beat = false; // Bandera que indica cuándo el Timer1 generó una interrupción
 
 // ============================================================================
-// INTERRUPCIÓN DEL TIMER1: EL CORAZÓN DEL SISTEMA
+// INTERRUPCIÓN DEL TIMER1
 // ============================================================================
 
 /**
@@ -144,15 +143,9 @@ ISR(TIMER1_COMPA_vect) {
 }
 
 // ============================================================================
-// CONFIGURACIÓN INICIAL DEL SISTEMA (SE EJECUTA UNA VEZ)
+// CONFIGURACIÓN INICIAL DEL SISTEMA
 // ============================================================================
 
-/**
- * ¿QUÉ ES LA FUNCIÓN setup()?
- * Es una función especial de Arduino que se ejecuta UNA SOLA VEZ
- * cuando el microcontrolador se enciende o se reinicia.
- * Aquí configuramos todos los componentes del hardware.
- */
 void setup() {
     // ============================================================================
     // CONFIGURACIÓN DEL PUERTO SERIE PARA DEPURACIÓN
@@ -220,9 +213,11 @@ void setup() {
     // Es el protocolo de comunicación serie con la PC
     
     Serial.println("Configurando UART a 38400 baudios...");
-    usart.begin(38400);     // ¡CRÍTICO! Debe coincidir con SerialPlotter
-                           // 38400 = 3840 muestras/seg × 10 bits/byte
-                           // Esto sincroniza perfectamente el muestreo con la comunicación
+    // El objeto usart ya está configurado automáticamente en su constructor
+    // con métodos: usart.enviar_byte() y usart.hay_datos_disponibles()
+    // a 38400 baudios - ¡CRÍTICO! Debe coincidir con SerialPlotter
+    // 38400 = 3840 muestras/seg × 10 bits/byte
+    // Esto sincroniza perfectamente el muestreo con la comunicación
     
     // ============================================================================
     // HABILITAR INTERRUPCIONES GLOBALES
@@ -287,7 +282,7 @@ void loop() {
         // - Análisis FFT en tiempo real
         // - Interfaz gráfica con visualización
         
-        usart.escribir(muestra_adc);      // Transmitir por UART a 38400 baudios
+        usart.enviar_byte(muestra_adc);   // Transmitir por UART a 38400 baudios
                                          // ¡Esta muestra llegará a SerialPlotter!
         
         // ========================================================================
@@ -298,8 +293,8 @@ void loop() {
         // La PC recibió nuestra muestra, la filtró, y nos envió el resultado
         // Nosotros tomamos ese resultado y lo convertimos a voltaje analógico
         
-        if (usart.pendiente_lectura()) {  // ¿Hay datos esperando en el buffer de recepción?
-            valor = usart.leer();         // Leer el byte de datos filtrados (0-255)
+        if (usart.hay_datos_disponibles()) {  // ¿Hay datos esperando en el buffer de recepción?
+            valor = usart.recibir_byte();     // Leer el byte de datos filtrados (0-255)
                                          // Este valor será usado por la ISR en write()
         } else {
             // ========================================================================
@@ -329,7 +324,7 @@ void loop() {
             Serial.print(" | DAC: ");
             Serial.print(valor);
             Serial.print(" | Comunicacion: ");
-            Serial.println(usart.pendiente_lectura() ? "ACTIVA" : "FALLBACK");
+            Serial.println(usart.hay_datos_disponibles() ? "ACTIVA" : "FALLBACK");
         }
     }
     
