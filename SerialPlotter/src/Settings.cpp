@@ -13,7 +13,10 @@ using namespace std::string_literals;
 
 // Arrays de opciones disponibles
 const int bauds[] = { 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 230400, 250000, 460800, 500000, 921600, 1000000, 2000000 };
-const int frecuencias[] = { 120, 240, 480, 960, 1440, 1920, 3840, 5760, 11520, 23040, 25000, 46080, 50000, 92160, 100000, 2000000 };
+
+// Frecuencias de muestreo disponibles (Hz) - optimizadas para Arduino Mega
+// El Mega puede manejar frecuencias más altas gracias a sus 4 UARTs y más RAM
+const int frecuencias[] = { 120, 240, 480, 960, 1440, 1920, 3840, 5760, 7680, 11520, 15360, 23040, 25000, 46080, 50000, 92160, 100000 };
 
 #include "Widgets.h"
 

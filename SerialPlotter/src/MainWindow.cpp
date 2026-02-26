@@ -34,10 +34,12 @@
 #include "Settings.h"
 
 // Velocidades de comunicación serial estándar (bits por segundo)
+// Arduino Mega 2560 soporta baudrates más altos que Uno
 const int bauds[] = { 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200, 230400, 250000, 460800, 500000, 921600, 1000000, 2000000 };
 
-// Frecuencias de muestreo disponibles (Hz) - deben coincidir con las opciones de baud rate
-const int frecuencias[] = { 120, 240, 480, 960, 1440, 1920, 3840, 5760, 11520, 23040, 25000, 46080, 50000, 92160, 100000, 2000000 };
+// Frecuencias de muestreo disponibles (Hz) - optimizadas para Arduino Mega
+// El Mega puede manejar frecuencias más altas gracias a sus 4 UARTs y más RAM
+const int frecuencias[] = { 120, 240, 480, 960, 1440, 1920, 3840, 5760, 7680, 11520, 15360, 23040, 25000, 46080, 50000, 92160, 100000 };
 
 #include "Widgets.h"
 
@@ -144,8 +146,11 @@ void MainWindow::CreateBuffers() {
     next_time = 0;
 
     DestroyBuffers();
-    read_buffer.resize(128);
-    write_buffer.resize(128);
+    
+    // Aumentar tamaño de buffers para reducir overhead de lecturas pequeñas
+    // Arduino Mega tiene más RAM, podemos usar buffers más grandes
+    read_buffer.resize(512);   // Era 128, ahora 512 (4x más)
+    write_buffer.resize(512);  // Era 128, ahora 512 (4x más)
 
     // Crear buffers circulares para datos en tiempo real
     fft = new FFT(settings->sampling_rate);
@@ -232,6 +237,19 @@ void MainWindow::DrawSidebar()
 {
     static int stride_exp = 2;  // Exponente para calcular stride (2^n)
     
+    // Escalas de tiempo POR DIVISIÓN (en segundos)
+    // Estas representan el tiempo que hay ENTRE cada división vertical
+    static const float time_per_division[] = { 
+        0.001f, 0.002f, 0.005f, 0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 
+        1.0f, 1.5f, 2.0f 
+    };
+    static const char* time_scale_labels[] = { 
+        "1 ms/div", "2 ms/div", "5 ms/div", "10 ms/div", "20 ms/div", "50 ms/div", 
+        "100 ms/div", "200 ms/div", "500 ms/div",
+        "1 s/div", "1.5 s/div", "2 s/div"
+    };
+    static const int num_time_scales = std::size(time_per_division);
+    
     // Panel lateral izquierdo: ocupa toda la altura de la ventana
     ImGui::SetNextWindowPos({ 0, 0 });
     ImGui::SetNextWindowSize(ImVec2(sidebar_width, height));
@@ -275,13 +293,83 @@ void MainWindow::DrawSidebar()
     
     ComboBaudRate(settings->baud_rate);
     
+    // Validación de ancho de banda serial
+    // Calcular ancho de banda necesario vs disponible
+    int required_bandwidth = settings->sampling_rate * 2 * 10; // 2 bytes/muestra × 10 bits/byte
+    float bandwidth_ratio = (float)settings->baud_rate / required_bandwidth;
+    
+    if (bandwidth_ratio < 1.0f) {
+        // Advertencia: baudrate insuficiente
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.0f, 1.0f)); // Naranja/rojo
+        ImGui::TextWrapped("ADVERTENCIA: Baudrate insuficiente!");
+        ImGui::Text("Necesario: %d bps", required_bandwidth);
+        ImGui::Text("Actual: %d bps (%.0f%%)", settings->baud_rate, bandwidth_ratio * 100);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("La señal se trabara o perdera muestras.\n"
+                             "Soluciones:\n"
+                             "1. Aumentar Velocidad a 115200 o mas\n"
+                             "2. Reducir Frecuencia de muestreo");
+        }
+    }
+    else if (bandwidth_ratio < 1.2f) {
+        // Advertencia: baudrate ajustado (puede tener problemas)
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f)); // Amarillo
+        ImGui::Text("Baudrate ajustado (%.0f%% usado)", bandwidth_ratio * 100);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("El baudrate esta al limite.\n"
+                             "Recomendado: aumentar a 115200+ para mas margen.");
+        }
+    }
+    else {
+        // OK: baudrate suficiente
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f)); // Verde
+        ImGui::Text("Baudrate OK (%.0f%% usado)", (1.0f / bandwidth_ratio) * 100);
+        ImGui::PopStyleColor();
+    }
+    
+    ImGui::Spacing();
+
     // Mapeo de valores ADC (0-255) a voltaje (-6V a +6V)
     if (ImGui::SliderInt("Maximo", &settings->maximum, 0, 255)) {
         settings->map_factor = 12.0 / (settings->maximum - settings->minimum);
     }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Valor ADC que corresponde a +6V\n"
+                         "Calibracion: ajusta segun el rango real de tu hardware\n"
+                         "Por defecto: 255 (rango completo ADC)");
+    }
     
     if (ImGui::SliderInt("Minimo", &settings->minimum, 0, 255)) {
         settings->map_factor = 12.0 / (settings->maximum - settings->minimum);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Valor ADC que corresponde a -6V\n"
+                         "Calibracion: ajusta segun el rango real de tu hardware\n"
+                         "Por defecto: 0 (rango completo ADC)");
+    }
+    
+    // Selector de tiempo por división (como en un osciloscopio real)
+    ImGui::Text("Tiempo/Division");
+    if (ImGui::BeginCombo("##TimeScale", time_scale_labels[time_scale_index])) {
+        for (int i = 0; i < num_time_scales; i++) {
+            const bool is_selected = (time_scale_index == i);
+            if (ImGui::Selectable(time_scale_labels[i], is_selected)) {
+                time_scale_index = i;
+                // Calcular el tiempo total visible: 16 divisiones × tiempo por división
+                max_time_visible = time_per_division[i] * 16;
+                
+                // NO hacer nada más aquí - el ajuste de límites se hace automáticamente en Draw()
+                // Esto asegura que right_limit = left_limit + max_time_visible siempre
+            }
+            if (is_selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Tiempo por division (16 divisiones totales)\nLas divisiones siempre ocupan todo el ancho del grafico");
     }
     
     // Stride: dibuja 1 de cada 2^n muestras para mejorar rendimiento
@@ -290,7 +378,8 @@ void MainWindow::DrawSidebar()
         settings->byte_stride = sizeof(double) * settings->stride;
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Dibuja 1 de cada 2^n muestras");
+        ImGui::SetTooltip("Optimizacion de rendimiento:\nStride = %d -> Dibuja 1 de cada %d muestras\n\nMayor = Mejor FPS, Menor detalle", 
+                         settings->stride, settings->stride);
     }
     
     ImGui::Checkbox("Mostrar FPS", &settings->show_frame_time);
@@ -374,7 +463,9 @@ void MainWindow::DrawSidebar()
 void MainWindow::Start() {
     CreateBuffers();
 
-    left_limit = 0, right_limit = max_time_visible;
+    // Inicializar límites con la escala temporal actual
+    left_limit = 0;
+    right_limit = max_time_visible;
 
     // Configurar parámetros de filtros según frecuencia de muestreo
     SetupFilter();
@@ -449,8 +540,9 @@ void MainWindow::ResetFilters() {
 
 void MainWindow::SerialWorker() {
     while (do_serial_work) {
-        // Leer muestras del puerto serial (pocas por iteración para reducir latencia)
-        int read = serial.read(read_buffer.data(), 1);
+        // Leer en bloques más grandes para reducir overhead
+        // Arduino Mega puede manejar ráfagas más grandes sin problemas
+        int read = serial.read(read_buffer.data(), 128);  // Leer hasta 128 bytes por iteración (antes era 1)
 
         if (read > 0) {
             // Proteger escritura en buffers contra acceso concurrente durante freeze/unfreeze
@@ -487,10 +579,13 @@ void MainWindow::SerialWorker() {
             }
 
             size = scrollX->count();
+            
+            // Enviar datos procesados de vuelta por serial EN BLOQUE
+            serial.write(write_buffer.data(), read);
         }
-
-        // Enviar datos procesados de vuelta por serial
-        serial.write(write_buffer.data(), read);
+        
+        // Pequeña pausa para no saturar CPU (opcional, ajustar según necesidad)
+        // std::this_thread::sleep_for(1us);  // Descomentar si hay problemas de CPU
     }
 }
 
@@ -529,6 +624,20 @@ void MainWindow::Draw()
             right_limit = elapsed_time;
             left_limit = elapsed_time - max_time_visible;
         }
+        else {
+            // Al inicio, cuando aún no hay suficientes datos
+            left_limit = 0;
+            right_limit = max_time_visible;
+        }
+    }
+
+    // IMPORTANTE: Forzar que el rango visible SIEMPRE sea exactamente max_time_visible
+    // Esto asegura que las divisiones ocupen todo el ancho del gráfico
+    if (!frozen) {
+        right_limit = left_limit + max_time_visible;
+    }
+    else {
+        frozen_right_limit = frozen_left_limit + max_time_visible;
     }
 
     // Seleccionar fuente de datos según el estado (congelado vs en vivo)
@@ -573,6 +682,18 @@ void MainWindow::Draw()
     float header_height = 25.0f;  // Espacio para headers colapsables
     float graph_height = (available_height - header_height * 2) / 3.0f;
 
+    // === SISTEMA DE DIVISIONES TIPO OSCILOSCOPIO ===
+    // La escala temporal seleccionada define EXACTAMENTE cuánto tiempo muestra la pantalla completa
+    // Ejemplo: "1 ms/div" seleccionado = la pantalla muestra EXACTAMENTE 16ms (1ms × 16 divisiones)
+    
+    // Número fijo de divisiones (16 como solicitado)
+    const int num_divisions = 16;
+    
+    // Calcular límites de las divisiones basados en left_limit
+    // Las divisiones SIEMPRE ocupan todo el ancho del gráfico
+    double tick_start = frozen ? frozen_left_limit : left_limit;
+    double tick_end = frozen ? frozen_right_limit : right_limit;
+    
     // === GRÁFICO 1: ENTRADA (señal cruda) ===
     if (ImPlot::BeginPlot("Entrada", { -1, graph_height }, ImPlotFlags_NoLegend)) {
         // Configurar ejes según el estado de freeze
@@ -585,10 +706,10 @@ void MainWindow::Draw()
             ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
             ImPlot::SetupAxisLimits(ImAxis_Y1, frozen_down_limit, frozen_up_limit, ImGuiCond_Once);
-            ImPlot::SetupAxisLimits(ImAxis_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Once);
+            ImPlot::SetupAxisLimits(ImAxis_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Always);
         }
         else {
-            // Modo en vivo: zoom sincronizado con gráfico de Salida (comparten left/right/down/up_limit)
+            // Modo en vivo: zoom sincronizado con gráfico de Salida
             ImPlot::SetupAxisLinks(ImAxis_X1, &left_limit, &right_limit);
             ImPlot::SetupAxisLinks(ImAxis_Y1, &down_limit, &up_limit);
             
@@ -596,9 +717,11 @@ void MainWindow::Draw()
             ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
             ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7, ImGuiCond_FirstUseEver);
-            ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
+            ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, ImGuiCond_Always);
         }
-
+        
+        // Configurar divisiones del eje X: 16 divisiones que ocupan TODO el ancho
+        ImPlot::SetupAxisTicks(ImAxis_X1, tick_start, tick_end, num_divisions + 1);
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, INFINITY);
 
         // Dibujar línea con color verde #1CC809
@@ -617,7 +740,7 @@ void MainWindow::Draw()
         if (ImPlot::BeginPlot("Salida", { -1, graph_height }, ImPlotFlags_NoLegend)) {
             // Configurar ejes según el estado de freeze
             if (frozen) {
-                // Modo congelado: zoom manual independiente (usa frozen_*_limit)
+                // Modo congelado: zoom manual independiente
                 ImPlot::SetupAxisLinks(ImAxis_X1, &frozen_left_limit, &frozen_right_limit);
                 ImPlot::SetupAxisLinks(ImAxis_Y1, &frozen_down_limit, &frozen_up_limit);
                 
@@ -625,10 +748,10 @@ void MainWindow::Draw()
                 ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
                 ImPlot::SetupAxisLimits(ImAxis_Y1, frozen_down_limit, frozen_up_limit, ImGuiCond_Once);
-                ImPlot::SetupAxisLimits(ImAxis_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Once);
+                ImPlot::SetupAxisLimits(ImAxis_X1, frozen_left_limit, frozen_right_limit, ImGuiCond_Always);
             }
             else {
-                // Modo en vivo: zoom sincronizado con gráfico de Entrada (comparten left/right/down/up_limit)
+                // Modo en vivo: zoom sincronizado con gráfico de Entrada
                 ImPlot::SetupAxisLinks(ImAxis_X1, &left_limit, &right_limit);
                 ImPlot::SetupAxisLinks(ImAxis_Y1, &down_limit, &up_limit);
                 
@@ -636,12 +759,14 @@ void MainWindow::Draw()
                 ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"s");
 
                 ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7, ImGuiCond_FirstUseEver);
-                ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, started ? ImGuiCond_Always : ImGuiCond_None);
+                ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit, ImGuiCond_Always);
             }
-
+            
+            // Usar las mismas divisiones que el gráfico de Entrada
+            ImPlot::SetupAxisTicks(ImAxis_X1, tick_start, tick_end, num_divisions + 1);
             ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0, INFINITY);
 
-            // Dibujar línea filtrada avec color verde #1CC809
+            // Dibujar línea filtrada con color verde #1CC809
             if (dataX && dataY_filtered && current_draw_size > 0) {
                 ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.110f, 0.784f, 0.035f, 1.0f));
                 ImPlot::PlotLine("", dataX, dataY_filtered, current_draw_size, 0, 0, settings->byte_stride);
@@ -681,7 +806,6 @@ void MainWindow::Draw()
     // === SECCIÓN ANÁLISIS (colapsable) ===
     if (ImGui::CollapsingHeader("Análisis", ImGuiTreeNodeFlags_DefaultOpen)) {
         // Notificar al worker de análisis FFT (solo en modo en vivo)
-        // En modo congelado no se calcula FFT nuevo para evitar procesamiento innecesario
         if (!frozen) {
             analysis_cv.notify_one();
         }

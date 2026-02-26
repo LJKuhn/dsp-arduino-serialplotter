@@ -51,7 +51,8 @@ class MainWindow {
 
     int max_time = 120;  // Tiempo máximo de buffer (segundos)
 
-    float max_time_visible = 5;  // Ventana de tiempo visible por defecto (segundos)
+    float max_time_visible = 16.0f;  // Ventana de tiempo visible por defecto (16 segundos = 1s/div × 16 divisiones)
+    int time_scale_index = 9;  // Índice de la escala temporal seleccionada (1s/div por defecto)
 
     time_point start_time = clock::now();
 

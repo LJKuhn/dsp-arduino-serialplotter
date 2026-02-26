@@ -73,8 +73,9 @@ bool Serial::open(std::string port, int baud) {
         return false;
     }
 
-    // Configurar buffers de comunicación (2KB entrada y salida)
-    SetupComm(file, 2048, 2048);
+    // Configurar buffers de comunicación - aumentados para Arduino Mega
+    // El Mega tiene más RAM (8KB vs 2KB del Uno), podemos usar buffers más grandes
+    SetupComm(file, 8192, 8192);  // Era 2048, ahora 8KB (4x más)
     
     // Limpiar buffers previos
     PurgeComm(file, PURGE_RXABORT | PURGE_TXABORT | PURGE_RXCLEAR | PURGE_TXCLEAR);
@@ -94,14 +95,15 @@ bool Serial::open(std::string port, int baud) {
     state.fRtsControl = RTS_CONTROL_DISABLE;
     SetCommState(file, &state);
 
-    // Configurar timeouts (1 segundo para lectura y escritura)
+    // Configurar timeouts optimizados para transferencia de alta velocidad
+    // Reducir timeouts para mayor responsividad
     COMMTIMEOUTS timeouts;
     GetCommTimeouts(file, &timeouts);
-    timeouts.ReadIntervalTimeout = 0;
-    timeouts.ReadTotalTimeoutMultiplier = 0;
-    timeouts.ReadTotalTimeoutConstant = 1000;
-    timeouts.WriteTotalTimeoutMultiplier = 0;
-    timeouts.WriteTotalTimeoutConstant = 1000;
+    timeouts.ReadIntervalTimeout = 1;              // Tiempo entre bytes (1ms)
+    timeouts.ReadTotalTimeoutMultiplier = 0;       // Sin multiplicador
+    timeouts.ReadTotalTimeoutConstant = 10;        // Timeout total bajo (10ms, antes 1000ms)
+    timeouts.WriteTotalTimeoutMultiplier = 0;      // Sin multiplicador  
+    timeouts.WriteTotalTimeoutConstant = 100;      // Timeout de escritura (100ms, antes 1000ms)
     SetCommTimeouts(file, &timeouts);
     return true;
 }

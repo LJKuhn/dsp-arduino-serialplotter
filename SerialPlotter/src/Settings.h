@@ -19,8 +19,10 @@ struct Settings {
     std::string port;                               // Puerto COM seleccionado (ej: "COM3")
 
     // Mapeo de valores ADC (8 bits: 0-255) a voltaje
-    int maximum = 49, minimum = 175;                // Valores ADC que corresponden a +6V y -6V respectivamente
-    double map_factor = 12.0 / (maximum - minimum); // Factor de conversión: 12V / rango_ADC
+    // NOTA: Estos valores están INVERTIDOS intencionalmente para compatibilidad con hardware específico
+    // Si tu señal aparece invertida, cambia a: minimum = 0, maximum = 255
+    int minimum = 175, maximum = 49;                // Valores invertidos (configuración original)
+    double map_factor = 12.0 / (maximum - minimum); // Factor de conversión: 12V / rango_ADC (será negativo)
 
     // Optimización de rendimiento gráfico
     int stride = 4;                                 // Dibuja 1 de cada N muestras (reduce puntos en gráfico)
