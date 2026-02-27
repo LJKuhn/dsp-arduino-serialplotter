@@ -574,8 +574,8 @@ void MainWindow::SerialWorker() {
                 filter_scrollY->push(resultado);
                 next_time += 1.0 / settings->sampling_rate;
 
-                // Enviar señal procesada de vuelta (invertida para DAC)
-                write_buffer[i] = 255 - InverseTransformSample(resultado);
+                // Enviar señal procesada de vuelta al Arduino
+                write_buffer[i] = InverseTransformSample(resultado);
             }
 
             size = scrollX->count();

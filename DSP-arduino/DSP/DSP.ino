@@ -112,7 +112,7 @@ void setup()
    
    // Inicializar periféricos
    adc.begin(1);        // Iniciar ADC en canal 1
-   usart.begin(57600);    // Comunicación serie a 38400 baudios (sincronizado con SerialPlotter), probar con 115200
+   usart.begin(38400);    // Comunicación serie a 38400 baudios (sincronizado con SerialPlotter), probar con 115200
 
    // Configurar PORTA completo como salida para DAC (pines 22-29)
    // Arduino Mega 2560: PORTA = pines 22-29 (PA0-PA7)
@@ -210,7 +210,7 @@ void loop()
          valor = usart.leer();                   // Usar señal filtrada/procesada de la PC
       }
       else {
-         valor = 255 - muestra_adc;              // Usar ADC invertido como fallback
+         valor = muestra_adc;                    // Usar ADC directo como fallback
       }
       
       // El valor ya se escribirá al DAC en la próxima interrupción del Timer1
