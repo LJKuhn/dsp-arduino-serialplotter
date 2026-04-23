@@ -1,36 +1,42 @@
-// FFT.h - Análisis de frecuencia mediante Transformada Rápida de Fourier
+// FFT.h - Anï¿½lisis de frecuencia mediante Transformada Rï¿½pida de Fourier
 //
-// La clase FFT encapsula la funcionalidad de FFTW3 para realizar análisis
-// espectral de señales en tiempo real. Calcula las amplitudes de las frecuencias
-// presentes en una señal y permite identificar la frecuencia dominante y el offset DC.
+// La clase FFT encapsula la funcionalidad de FFTW3 para realizar anï¿½lisis
+// espectral de seï¿½ales en tiempo real. Calcula las amplitudes de las frecuencias
+// presentes en una seï¿½al y permite identificar la frecuencia dominante y el offset DC.
 //
-// Características:
-// - Usa FFTW3 (Fastest Fourier Transform in the West) para cálculos optimizados
+// Caracterï¿½sticas:
+// - Usa FFTW3 (Fastest Fourier Transform in the West) para cï¿½lculos optimizados
 // - Calcula solo las frecuencias positivas (transformada real a compleja)
-// - Identifica automáticamente la frecuencia dominante
+// - Identifica automï¿½ticamente la frecuencia dominante
 // - Calcula el offset DC (componente de frecuencia 0)
-// - Interfaz simple para visualización con ImPlot
+// - Interfaz simple para visualizaciï¿½n con ImPlot
 
 #pragma once
 
 #include <fftw3.h>
 #include <vector>
 
-class FFT {
-	fftw_complex* complex;    // Salida de la FFT (números complejos)
-	fftw_plan p;              // Plan de ejecución de FFTW (optimizado)
+// Estructura para almacenar informaciÃ³n de armÃ³nicas detectadas
+struct Harmonic {
+	double frequency;   // Frecuencia en Hz
+	double amplitude;   // Amplitud en Voltios
+	int bin_index;      // Ãndice del bin en el espectro FFT
+};
 
-	int samples_size;         // Tamaño del buffer de entrada (muestras temporales)
-	int amplitudes_size;      // Tamaño del buffer de salida (frecuencias)
+class FFT {
+	fftw_complex* complex;    // Salida de la FFT (nï¿½meros complejos)
+	fftw_plan p;              // Plan de ejecuciï¿½n de FFTW (optimizado)
+
+	int samples_size;         // Tamaï¿½o del buffer de entrada (muestras temporales)
+	int amplitudes_size;      // Tamaï¿½o del buffer de salida (frecuencias)
 	std::vector<double> samples;     // Buffer de entrada (dominio del tiempo)
 	std::vector<double> amplitudes;  // Buffer de salida (magnitudes de frecuencias)
 
 	double offset = 0;        // Offset DC (componente de frecuencia 0)
-	int n_frequency = 0;      // Índice de la frecuencia dominante
-
+	int n_frequency = 0;      // ï¿½ndice de la frecuencia dominante	std::vector<Harmonic> detected_harmonics;  // Almacena las armÃ³nicas detectadas
 public:
 	// Constructor
-	// sample_count: número de muestras a analizar (debe ser potencia de 2 para mejor rendimiento)
+	// sample_count: nï¿½mero de muestras a analizar (debe ser potencia de 2 para mejor rendimiento)
 	explicit FFT(int sample_count);
 	
 	~FFT();
@@ -39,19 +45,30 @@ public:
 	// sampling_frequency: frecuencia de muestreo en Hz (determina el rango de frecuencias)
 	void Plot(double sampling_frequency);
 
-	// Carga datos para análisis FFT
+	// Carga datos para anï¿½lisis FFT
 	// data: puntero a array de muestras en dominio del tiempo
 	// count: cantidad de muestras (si es menor que sample_count, se rellena con ceros)
 	void SetData(const double* data, uint32_t count);
 
 	// Ejecuta la FFT y calcula las amplitudes de frecuencia
-	// También identifica la frecuencia dominante y el offset DC
+	// Tambiï¿½n identifica la frecuencia dominante y el offset DC
 	void Compute();
 
-	// Retorna el offset DC (componente de frecuencia 0) de la señal
+	// Retorna el offset DC (componente de frecuencia 0) de la seï¿½al
 	double Offset() const;
 	
 	// Retorna la frecuencia dominante en Hz
-	// sampling_frequency: frecuencia de muestreo usada al capturar la señal
-	double Frequency(double sampling_frequency) const;
-};
+	// sampling_frequency: frecuencia de muestreo usada al capturar la seï¿½al
+	double Frequency(double sampling_frequency) const;	
+	// Acceso al espectro completo de amplitudes
+	const std::vector<double>& GetAmplitudes() const { return amplitudes; }
+	int GetAmplitudesSize() const { return amplitudes_size; }
+	
+	// DetecciÃ³n de armÃ³nicas (mÃºltiplos de la frecuencia fundamental)
+	// sampling_frequency: frecuencia de muestreo en Hz
+	// count: nÃºmero de armÃ³nicas a detectar (por defecto 3)
+	// Retorna: vector con informaciÃ³n de cada armÃ³nica detectada
+	std::vector<Harmonic> FindHarmonics(double sampling_frequency, int count = 3);
+	
+	// Obtener amplitud de un bin especÃ­fico del espectro
+	double GetAmplitudeAt(int bin) const;};

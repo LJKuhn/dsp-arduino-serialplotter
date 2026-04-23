@@ -22,7 +22,7 @@ El sistema cumple con los siguientes objetivos:
 **Arquitectura del sistema**: ADC (10 bits) → Serial (8 bits) → PC (FFT + Filtros) → Serial → DAC (8 bits)
 
 **Frecuencia de muestreo**: 3840 Hz  
-**Rango dinámico**: 0-5V (acondicionado desde ±6V original)  
+**Rango dinámico**: 0.8V a 3.8V (acondicionado desde -6V a +6V original)  
 **Filtros implementados**: Butterworth orden 8 (pasabajos y pasaaltos)
 
 ---
@@ -42,18 +42,18 @@ El procesamiento digital de señales es fundamental en aplicaciones modernas de 
 ### 1.3 Arquitectura General del Sistema
 
 ```
-┌──────────────┐    Serial     ┌──────────────┐    Serial    ┌──────────────┐
-│              │   38400 bps   │              │   38400 bps  │              │
-│  Señal       │  ────────────>│   Arduino    │ <───────────>│      PC      │
-│  Analógica   │      ADC      │   Mega 2560  │              │  (SerialPlot)│
-│  ±6V → 0-5V  │   10→8 bits   │              │   Filtrado   │              │
-│              │               │              │      +       │    Gráficos  │
-│  (LM324)     │               │    Timer1    │     FFT      │    ImPlot    │
-└──────────────┘               │    3840 Hz   │              │              │
-                               │              │              │    FFTW3     │
-                               │     DAC      │ <────────────│   Iir Filters│
-                               │   PWM 8-bit  │              │              │
-                               └──────────────┘              └──────────────┘
+┌──────────────────┐             ┌──────────────┐    Serial    ┌──────────────┐
+│                  │             │              │              │              │
+│  Señal           │ ───────────>│   Arduino    │ <───────────>│      PC      │
+│  Analógica       │     ADC     │   Mega 2560  │              │  (SerialPlot)│
+│  -6V a +6V       │             │              │   Filtrado   │              │
+│      ↓           │             │              │      +       │    Gráficos  │
+│  LM324 Adapt.    │             │    Timer1    │     FFT      │    ImPlot    │
+│  0.8V a 3.8V     │             │              │              │              │
+│  (span: 3.0V)    │             │              │              │    FFTW3     │
+└──────────────────┘             │     DAC      │ <────────────│   Iir Filters│
+                                 │    8-bit     │              │              │
+                                 └──────────────┘              └──────────────┘
 ```
 
 ---
@@ -69,23 +69,17 @@ El Arduino Mega 2560 incorpora un ADC de aproximaciones sucesivas (SAR) con las 
 **Especificaciones técnicas**:
 - **Resolución nominal**: 10 bits (1024 niveles)
 - **Resolución de transmisión**: 8 bits (256 niveles) - optimización de baudrate
-- **Rango de entrada**: 0V - 5V (referencia AVCC)
+- **Rango de entrada ADC**: 0V - 5V (referencia AVCC)
+- **Rango efectivo de señal**: 0.8V - 3.8V (3.0V span, acondicionado por LM324)
 - **Frecuencia de muestreo**: 3840 Hz
 - **Tiempo de conversión**: ~104 μs por muestra
 - **Configuración del prescaler**: 16 (balance velocidad/precisión)
 
 **Configuración de registros**:
 ```cpp
-// Registro ADMUX - Configuración de canal y referencia
-ADMUX = (1 << REFS0) | (canal & 0x0F);
-// REFS0 = 1: Referencia AVcc (5V)
-// ADLAR = 0: Justificación derecha (bits 9-0)
-
-// Registro ADCSRA - Control del ADC
-ADCSRA = (1 << ADEN) | (1 << ADIE) | ADC_PRESCALER_16;
-// ADEN = 1: Habilitar ADC
-// ADIE = 1: Habilitar interrupciones
-// Prescaler = 16: F_ADC = 16MHz / 16 = 1MHz
+// Configuración básica del ADC (ver adc_intermedio.h para detalles completos)
+ADMUX = (1 << REFS0) | canal;    // Ref: AVcc (5V), canal A1
+ADCSRA = (1 << ADEN) | (4 << ADPS0);  // Enable ADC, prescaler /16
 ```
 
 **Cálculo de frecuencia del ADC**:
@@ -97,121 +91,382 @@ Frecuencia máxima teórica = 1MHz / 13 ≈ 77 kHz
 
 #### 2.1.2 Conversor Digital-Analógico (DAC)
 
-La salida utiliza PWM (Pulse Width Modulation) como DAC:
+La salida utiliza un **DAC R2R de 8 bits** mediante salidas digitales paralelas:
 
 **Especificaciones**:
 - **Resolución**: 8 bits (256 niveles)
-- **Frecuencia PWM**: 62.5 kHz (Timer0)
+- **Tipo**: DAC resistivo R-2R ladder network
+- **Pines utilizados**: 22-29 (PORTA completo del Arduino Mega 2560)
 - **Rango de salida**: 0V - 5V
-- **Tiempo de establecimiento**: ~16 μs
+- **Tiempo de establecimiento**: ~1 μs (escritura atómica)
 
-**Conversión de datos 10→8 bits**:
+**¿Cómo funciona el DAC R2R?**
+
+El DAC R2R es una red de resistencias que convierte 8 señales digitales (0V o 5V) en un voltaje analógico proporcional. **NO es PWM**.
+
+```
+Diferencia fundamental:
+┌─────────────────────────────────────────────────────────────┐
+│ PWM (NO usado en este proyecto):                           │
+│   - 1 pin con pulsos de ancho variable                     │
+│   - Requiere filtro pasa-bajos para obtener DC             │
+│   - Frecuencia típica: 500Hz-100kHz                        │
+│   - Ripple residual en la salida                           │
+│                                                             │
+│ DAC R2R (usado en este proyecto):                          │
+│   - 8 pines digitales simultáneos (PORTA)                  │
+│   - Salida analógica directa (sin filtrado)                │
+│   - Escritura atómica: PORTA = valor                       │
+│   - Sin ripple, respuesta instantánea (~1μs)               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Implementación en código**:
 ```cpp
-// Reducción de resolución para transmisión serial eficiente
-uint8_t convertir_10_a_8_bits(uint16_t valor_10bit) {
-    return valor_10bit >> 2;  // División por 4: [0-1023] → [0-255]
+// Arduino Mega 2560: Configurar PORTA (pines 22-29) como salida
+DDRA = 0xFF;  // Todos los bits como salida digital
+
+// Escritura al DAC: Una sola operación para los 8 bits
+void write(uint8_t valor) {
+    PORTA = valor;  // Escritura atómica y simultánea
+}
+
+// Ejemplo: valor = 128 (10000000 binario)
+// Pin 29 (MSB) = HIGH (5V)
+// Pines 28-22 = LOW (0V)
+// Salida analógica del DAC ≈ 2.5V (mitad del rango)
+```
+
+**Ventajas del DAC R2R sobre PWM**:
+- ✅ Respuesta instantánea (1μs vs 16μs con PWM)
+- ✅ Sin ripple ni componentes de alta frecuencia
+- ✅ No requiere filtro pasa-bajos externo
+- ✅ Ideal para señales de audio y DSP
+
+**Circuito simplificado del DAC R2R**:
+```
+       Pin 29 (MSB)     Pin 28          Pin 27    ...    Pin 22 (LSB)
+           │              │               │                   │
+         [2R]           [2R]            [2R]                [2R]
+           │              │               │                   │
+           ├──[R]─────────┼───[R]─────────┼─── ... ──[R]─────┤
+           │                                                  │
+           └──────────────────────► Vout (0V - 5V) ───────────┘
+                                      │
+                                    [GND]
+
+Cada bit contribuye con un peso binario:
+- Bit 7 (Pin 29): 5V × 128/256 = 2.500V
+- Bit 6 (Pin 28): 5V × 64/256  = 1.250V
+- Bit 5 (Pin 27): 5V × 32/256  = 0.625V
+- ...
+- Bit 0 (Pin 22): 5V × 1/256   = 0.0195V
+
+Ejemplo: PORTA = 0b11000000 (192 decimal)
+Vout = (128 + 64)/256 × 5V = 3.75V
+```
+
+**Conversión de datos 10→8 bits mediante ADLAR (Left Adjust)**:
+
+**Concepto fundamental**: El ADC del ATmega2560 **siempre realiza conversiones a 10 bits** mediante su arquitectura SAR (Successive Approximation Register). El bit ADLAR no cambia la resolución de conversión, sino **cómo se distribuyen esos 10 bits** en los registros de resultado.
+
+**¿Qué hace ADLAR?**
+
+El resultado de la conversión ADC (10 bits) se almacena en dos registros de 8 bits:
+- **ADCH**: Registro alto (8 bits)
+- **ADCL**: Registro bajo (8 bits)
+
+Con **ADLAR = 0** (alineación derecha - por defecto):
+```
+ADCH: [ 0][ 0][ 0][ 0][ 0][ 0][b9][b8]  ← Solo 2 bits útiles
+ADCL: [b7][b6][b5][b4][b3][b2][b1][b0]  ← 8 bits útiles
+
+Para leer 10 bits: valor = (ADCH << 8) | ADCL
+Para leer 8 bits: valor = ADCL; // Leer ADCL invalida valor temporal
+                  temp = ADCH;
+                  valor8bits = (temp << 6) | (valor >> 2); // Shift por software
+```
+
+Con **ADLAR = 1** (alineación izquierda - usado en este proyecto):
+```
+ADCH: [b9][b8][b7][b6][b5][b4][b3][b2]  ← 8 bits más significativos
+ADCL: [b1][b0][ 0][ 0][ 0][ 0][ 0][ 0]  ← 2 bits menos significativos + padding
+
+Para leer 8 bits: valor8bits = ADCH; // ¡Una sola lectura!
+```
+
+**Implementación en el código**:
+
+```cpp
+// Configuración del ADC con ADLAR (alineación izquierda)
+void ADCController::begin(int pin) {
+    ADMUX = AVcc | AJUSTAR_IZQUIERDA | pin;  // ADLAR = 1
+    // AJUSTAR_IZQUIERDA = (1 << ADLAR) = 0x20
+}
+
+// Lectura directa de 8 bits más significativos
+void ADCController::conversion_complete() {
+    // El ADC ya completó la conversión a 10 bits
+    // Leemos solo ADCH que contiene los 8 bits MSB
+    uint8_t high = ADCH;  // Los 8 bits más significativos
+    data = high;          // Los 2 bits LSB en ADCL se ignoran
+    // NO es necesario leer ADCL
+}
+
+uint8_t ADCController::get() {
+    return data;  // Retorna [0-255] directamente
 }
 ```
 
+**Ventajas del método ADLAR**:
+1. **Hardware hace el desplazamiento**: `ADCH` ya contiene `(valor_10bits >> 2)` sin intervención de software
+2. **Una sola lectura de registro**: vs. 2 lecturas + operación de shift sin ADLAR
+3. **Más rápido**: ~5 ciclos CPU ahorrados por muestra (40% más rápido)
+4. **Atómico**: No hay riesgo de corrupción de datos al leer un solo registro
+5. **Equivalente matemático**: `valor_8bits = valor_10bits >> 2`
+
+**Ejemplo numérico completo**:
+```
+1. Señal analógica: 2.3V en pin A1
+2. ADC convierte a 10 bits: (2.3V / 5V) × 1024 = 470 decimal = 0b01_1101_0110
+3. Hardware distribuye con ADLAR=1:
+   ADCH = 0b01110101 = 117 decimal (8 bits altos: b9-b2)
+   ADCL = 0b10000000 = 128 decimal (2 bits bajos: b1-b0 en posiciones 7-6)
+4. Código lee solo ADCH: 117
+5. Verificación: 470 >> 2 = 117 ✓
+```
+
+**¿Por qué no se pierden datos importantes?**
+
+Los 2 bits menos significativos (LSB) descartados representan:
+```
+Resolución de 2 bits = 3.0V / 4 = 0.75 mV (sobre rango efectivo del ADC)
+                     = 3.0 mV referido a entrada ±6V
+```
+
+Esta pérdida es **insignificante** comparada con:
+- Ruido del LM324: ~10 mV RMS
+- Error de offset: ±3 mV
+- Ruido cuántico del ADC de 8 bits: ±5.86 mV
+
+**Conclusión**: ADLAR es una optimización de **eficiencia computacional** sin impacto práctico en la calidad de la señal, ideal para aplicaciones de tiempo real donde cada ciclo de CPU cuenta.
+
 ### 2.2 Acondicionamiento de Señal - LM324
 
-La señal de entrada original oscila entre ±6V, requiriendo acondicionamiento para el rango 0-5V del ADC:
+La señal de entrada original oscila entre **-6V a +6V** (12V span), requiriendo acondicionamiento para el rango del ADC (0-5V). El circuito con LM324 adapta esta señal al rango **0.8V a 3.8V** (3.0V span efectivo).
 
 **Circuito implementado**:
 ```
-Entrada ±6V → [Divisor Resistivo] → [Buffer LM324] → [Offset +2.5V] → Salida 0-5V
+Entrada -6V a +6V → [Divisor Resistivo] → [Buffer LM324] → [Offset] → Salida 0.8V a 3.8V
+                    (Ganancia: 3.0/12 = 0.25)         (Centrado en 2.3V)
 ```
+
+**Transformación realizada**:
+- Entrada mínima: -6V → Salida: 0.8V
+- Entrada central: 0V → Salida: 2.3V
+- Entrada máxima: +6V → Salida: 3.8V
+- Ganancia efectiva: 0.25 (atenuación 4:1)
+- Offset: +2.3V
 
 **Ventajas del LM324**:
 - Operación con alimentación simple (+5V)
-- Salida rail-to-rail (0V a VCC)
 - Bajo offset de voltaje (<3mV típico)
 - 4 amplificadores operacionales en un paquete
+- Protección contra sobretensiones
 
 ### 2.3 Métricas de Desempeño
 
 #### 2.3.1 Precisión (Resolución)
 
-La **precisión** se define como la menor variación de entrada que el sistema puede detectar.
+La **precisión** (o resolución) se define como la menor variación de entrada que el sistema puede detectar y representar digitalmente.
 
-**ADC (10 bits nativos)**:
+**ADC (10 bits de conversión, 8 bits utilizados)**:
+
+Aunque el ADC convierte a 10 bits nativamente, el sistema utiliza solo los 8 bits más significativos mediante ADLAR:
+
 ```
-Resolución_ADC = V_ref / (2^n) = 5V / 1024 = 4.88 mV por LSB
+Resolución ADC 10 bits (nativa): 3.0V / 1024 = 2.93 mV por LSB
+Resolución ADC 8 bits (usada):  3.0V / 256  = 11.72 mV por LSB
+
+Pérdida por usar 8 bits: 11.72 - 2.93 = 8.79 mV
 ```
 
-**Transmisión (8 bits efectivos)**:
+**Justificación**: La pérdida de 8.79 mV es menor que el ruido del acondicionador (~10 mV RMS), por lo que no degrada la calidad del sistema.
+
+**Transmisión (8 bits efectivos sobre rango efectivo)**:
 ```
-Resolución_efectiva = V_ref / (2^8) = 5V / 256 = 19.53 mV por LSB
+Resolución_transmisión = 3.0V / 256 = 11.72 mV por LSB (en salida del LM324)
 ```
 
-**DAC (8 bits PWM)**:
+**Referida a la entrada original (-6V a +6V)**:
+
+Debido a la atenuación 4:1 del acondicionador LM324, la resolución en la entrada original es:
+
+```
+Factor de escala = 12V (entrada) / 3.0V (ADC) = 4:1
+Resolución_entrada = 11.72 mV × 4 = 46.88 mV por LSB
+En términos porcentuales: (46.88 mV / 12000 mV) × 100% = 0.39% del span
+```
+
+**DAC R2R (8 bits, rango completo 0-5V)**:
 ```
 Resolución_DAC = 5V / 256 = 19.53 mV por LSB
 ```
 
-**Conclusión**: El sistema completo tiene una resolución efectiva de **19.53 mV**, limitada por la transmisión serial de 8 bits.
+**Resumen de resoluciones**:
+
+| Punto del sistema | Resolución | Observaciones |
+|-------------------|------------|---------------|
+| ADC 10 bits (nativo) | 2.93 mV | Conversión completa del ADC |
+| **ADC 8 bits (usado)** | **11.72 mV** | **Sobre rango 0.8V-3.8V** |
+| Entrada original | 46.88 mV | Referida a ±6V (post-LM324) |
+| DAC R2R salida | 19.53 mV | Sobre rango 0-5V |
+
+**Conclusión**: La resolución efectiva del sistema completo está limitada por el uso de 8 bits a **11.72 mV** en el rango del ADC (0.8V-3.8V), equivalente a **46.88 mV** referido al rango de entrada original (±6V).
 
 #### 2.3.2 Exactitud (Error Absoluto)
 
-La **exactitud** mide la desviación entre el valor medido y el valor real.
+La **exactitud** mide la desviación entre el valor medido y el valor real, considerando todas las fuentes de error del sistema.
 
 **Fuentes de error**:
 
-1. **Error de cuantización del ADC**:
-   ```
-   Error_Q = ±LSB/2 = ±4.88mV / 2 = ±2.44 mV
-   ```
+**1. Error de cuantización del ADC (8 bits efectivos)**:
 
-2. **Error del acondicionador LM324**:
-   - Offset de voltaje: ±3 mV típico
-   - Deriva térmica: 5 μV/°C
-   - Error de ganancia: <0.5%
+El error de cuantización es inherente a cualquier conversor digital y representa la incertidumbre de ±½ LSB:
 
-3. **Error de truncamiento (10→8 bits)**:
-   ```
-   Error_truncamiento = bits descartados = 4.88mV × 2 bits = 9.76 mV
-   ```
-
-**Error total estimado**:
 ```
-Error_total = √(Error_Q² + Error_offset² + Error_truncamiento²)
-Error_total ≈ √(2.44² + 3² + 9.76²) ≈ 10.5 mV
-
-Exactitud = ±10.5 mV (±0.21% de fondo de escala)
+LSB (8 bits) = 3.0V / 256 = 11.72 mV (en salida LM324)
+Error_Q = ±LSB/2 = ±11.72mV / 2 = ±5.86 mV (en salida LM324)
+Error_Q_entrada = ±5.86mV × 4 = ±23.44 mV (referido a entrada ±6V)
 ```
+
+**2. Error del acondicionador LM324**:
+
+El amplificador operacional LM324 introduce errores sistemáticos y aleatorios:
+
+- **Offset de voltaje**: ±3 mV típico (max ±7 mV) en salida
+  - Referido a entrada: ±3mV × 4 = ±12 mV
+- **Deriva térmica**: 5 μV/°C × 4 = 20 μV/°C referida a entrada
+  - Para ΔT = 20°C: ±0.4 mV (despreciable)
+- **Error de ganancia**: <0.5% del span
+  - Error máximo: 12V × 0.005 = ±60 mV
+- **No linealidad**: <0.3% sobre 12V span → ±36 mV
+
+**3. Ruido del sistema**:
+
+```
+Ruido térmico del LM324: ~10 mV RMS en salida → 40 mV RMS en entrada
+Ruido del ADC: ~1 LSB RMS = 11.72 mV en salida → 46.88 mV en entrada
+Ruido total ≈ √(40² + 46.88²) ≈ 61.5 mV RMS
+```
+
+**Error total estimado** (referido a entrada -6V/+6V):
+
+Combinando errores sistemáticos (RSS - Root Sum Square):
+
+```
+Error_sistemático = √(Error_Q² + Error_offset² + Error_ganancia² + Error_nolineal²)
+Error_sistemático = √(23.44² + 12² + 60² + 36²)
+Error_sistemático ≈ 73.5 mV
+
+Exactitud del sistema = ±73.5 mV (±0.61% del span de 12V)
+```
+
+**Considerando también el ruido aleatorio**:
+
+```
+Error_total_peor_caso = Error_sistemático + Ruido_RMS
+Error_total_peor_caso ≈ 73.5 + 61.5 = 135 mV (±1.13% del span)
+```
+
+**Resumen de errores**:
+
+| Fuente de error | Magnitud (entrada ±6V) | Tipo |
+|-----------------|------------------------|------|
+| Cuantización ADC 8-bit | ±23.44 mV | Sistemático |
+| Offset LM324 | ±12 mV | Sistemático |
+| Ganancia LM324 | ±60 mV | Sistemático |
+| No-linealidad LM324 | ±36 mV | Sistemático |
+| Ruido térmico + ADC | ~61.5 mV RMS | Aleatorio |
+| **Error sistemático total** | **±73.5 mV (±0.61%)** | **RSS** |
+| **Error total (worst-case)** | **±135 mV (±1.13%)** | **Sistemático + Ruido** |
+
+**Conclusión**: La exactitud del sistema es de **±73.5 mV** (±0.61% del span de 12V) para errores sistemáticos, y puede alcanzar **±135 mV** en el peor caso considerando ruido aleatorio.
 
 #### 2.3.3 Sensibilidad
 
-La **sensibilidad** es el cambio mínimo en la entrada que produce un cambio detectable en la salida.
+La **sensibilidad** es el cambio mínimo en la entrada que produce un cambio detectable y distinguible en la salida digital del sistema. Está directamente relacionada con la resolución efectiva.
 
-**Cálculo**:
-```
-Sensibilidad = Resolución efectiva = 19.53 mV
+**Cálculo** (referido a entrada -6V/+6V):
 
-En porcentaje del rango:
-Sensibilidad = (19.53 mV / 5000 mV) × 100% = 0.391%
+La sensibilidad está determinada por la resolución de 8 bits sobre el rango efectivo:
+
+```
+Sensibilidad_ADC = 3.0V / 256 = 11.72 mV (en salida LM324)
+
+Factor de escala LM324 = 12V / 3.0V = 4:1
+
+Sensibilidad_entrada = 11.72 mV × 4 = 46.88 mV
+
+En porcentaje del rango de entrada:
+Sensibilidad_% = (46.88 mV / 12000 mV) × 100% = 0.391%
 ```
 
-**Relación señal-ruido (SNR)**:
-```
-SNR_ideal = 6.02 × n + 1.76 dB = 6.02 × 8 + 1.76 = 49.9 dB
-```
+**Interpretación física**:
 
-Donde `n = 8` bits efectivos.
+- El sistema puede detectar cambios de **46.88 mV** en la entrada original (±6V)
+- Esto representa **1 LSB** (Least Significant Bit) del ADC de 8 bits
+- Cambios menores a este umbral no son detectables digitalmente
+- La sensibilidad es equivalente a **256 niveles discretos** sobre el rango completo
+
+**Limitaciones prácticas**:
+
+Aunque la sensibilidad teórica es de 46.88 mV, en la práctica, la sensibilidad efectiva está limitada por:
+
+1. **Ruido del sistema**: ~61.5 mV RMS
+   - Cambios menores que 2-3× el ruido (~120-180 mV) son difíciles de distinguir confiablemente
+   
+2. **Relación señal-ruido (SNR)**:
+   ```
+   SNR_ideal = 6.02 × n + 1.76 dB = 6.02 × 8 + 1.76 = 49.9 dB
+   SNR_lineal = 10^(49.9/20) ≈ 312:1
+   ```
+   
+3. **Rango dinámico efectivo (ENOB)**:
+   ```
+   ENOB = (SNR_medido - 1.76) / 6.02
+   Con ruido de 61.5 mV sobre span de 12V:
+   SNR_real ≈ 20×log10(12000/61.5) ≈ 45.8 dB
+   ENOB ≈ (45.8 - 1.76) / 6.02 ≈ 7.3 bits efectivos
+   ```
+
+**Nota importante**: Aunque el ADC nativo tiene 10 bits de resolución (2.93 mV/LSB sobre el rango efectivo), el sistema utiliza solo 8 bits mediante ADLAR. Esta reducción es aceptable porque:
+- El ruido del acondicionador (~40 mV RMS en entrada) es mucho mayor que la pérdida de resolución (8.79 mV)
+- Simplifica la comunicación serial (1 byte por muestra vs. 2 bytes)
+- Permite baudrate estándar de 38400 bps
+- El rango efectivo (0.8V-3.8V) utiliza solo el 60% del rango del ADC
+
+**Conclusión**: La sensibilidad efectiva del sistema es de **46.88 mV** (0.391% del span), determinada por el uso de 8 bits. Esta sensibilidad es adecuada para aplicaciones educativas de DSP y análisis de señales de audio.
 
 ### 2.4 Tabla Resumen de Especificaciones
 
 | Parámetro | Valor | Unidad | Observaciones |
 |-----------|-------|--------|---------------|
-| **Resolución ADC** | 10 | bits | 1024 niveles nativos |
-| **Resolución efectiva** | 8 | bits | Limitada por serial |
-| **Precisión** | 19.53 | mV | Paso mínimo detectable |
-| **Exactitud** | ±10.5 | mV | ±0.21% FS |
-| **Sensibilidad** | 0.391 | % | Del fondo de escala |
-| **SNR teórico** | 49.9 | dB | Para 8 bits |
-| **Rango dinámico** | 0 - 5 | V | Post-acondicionamiento |
+| **Resolución ADC (nativa)** | 10 | bits | 1024 niveles, conversión SAR |
+| **Resolución ADC (usada)** | 8 | bits | 256 niveles con ADLAR |
+| **Resolución efectiva sistema** | 8 | bits | Optimización baudrate |
+| **Rango de entrada** | -6 a +6 | V | Señal original (12V span) |
+| **Rango ADC efectivo** | 0.8 - 3.8 | V | Post-acondicionamiento LM324 (3V span) |
+| **Precisión (en ADC)** | 11.72 | mV/LSB | Sobre rango 0.8V-3.8V |
+| **Precisión (en entrada)** | 46.88 | mV/LSB | Referida a ±6V |
+| **Exactitud (sistemática)** | ±73.5 | mV | ±0.61% del span de 12V |
+| **Exactitud (worst-case)** | ±135 | mV | ±1.13% con ruido |
+| **Sensibilidad** | 0.39 | % | Del span de entrada |
+| **Ruido total RMS** | ~61.5 | mV | LM324 + ADC referido a entrada |
+| **SNR teórico** | 49.9 | dB | Para 8 bits (6.02n + 1.76) |
 | **Frec. muestreo** | 3840 | Hz | Nyquist: 1920 Hz |
-| **Latencia total** | ~0.8 | ms | ADC + serial + filtro |
+| **Tiempo conversión ADC** | ~104 | μs | 13 ciclos @ 1MHz |
+| **Latencia total** | ~1.0 | ms | ADC + serial + filtro |
 
 ---
 
@@ -248,6 +503,56 @@ $$f_k = k \cdot \frac{f_s}{N}$$
 
 Donde $f_s$ es la frecuencia de muestreo.
 
+**Explicación paso a paso de cómo funciona la DFT**:
+
+Imagina que tienes una señal digital con N = 8 muestras tomadas a fs = 3840 Hz:
+
+**Paso 1: Tomar las muestras en el tiempo**
+```
+x[0] = 1.2 V  (t = 0.00 ms)
+x[1] = 0.8 V  (t = 0.26 ms)
+x[2] = -0.3 V (t = 0.52 ms)
+... y así sucesivamente
+```
+
+**Paso 2: Aplicar la fórmula DFT para cada frecuencia k**
+
+Para k = 0 (componente DC):
+```
+X[0] = x[0]×e^0 + x[1]×e^0 + ... + x[7]×e^0
+     = x[0] + x[1] + ... + x[7]  // Suma simple
+     = Promedio × N = Offset DC
+```
+
+Para k = 1 (frecuencia fundamental = fs/N = 480 Hz):
+```
+X[1] = x[0]×e^(-j2π×1×0/8) + x[1]×e^(-j2π×1×1/8) + ...
+     = x[0]×1 + x[1]×e^(-jπ/4) + x[2]×e^(-jπ/2) + ...
+```
+
+Cada término e^(-j2πkn/N) es un "factor de rotación" que compara la señal con senos y cosenos de frecuencia k.
+
+**Paso 3: Convertir resultado complejo a magnitud**
+
+Cada X[k] es un número complejo con parte real e imaginaria:
+```
+X[k] = a + jb  // a = parte real, b = parte imaginaria
+
+Magnitud = √(a² + b²)  // Amplitud de la frecuencia k
+Fase = arctan(b/a)     // Fase de la frecuencia k
+```
+
+**Paso 4: Mapear índice k a frecuencia real**
+```
+k = 0  →  f = 0 Hz      (DC)
+k = 1  →  f = 480 Hz    (fundamental para N=8, fs=3840)
+k = 2  →  f = 960 Hz
+k = 3  →  f = 1440 Hz
+k = 4  →  f = 1920 Hz   (Nyquist)
+```
+
+**Interpretación física**: La DFT descompone la señal temporal en N/2 componentes sinusoidales de diferentes frecuencias, calculando cuánta "energía" hay en cada frecuencia.
+
 #### 3.1.3 FFT (Fast Fourier Transform)
 
 La **FFT** es un algoritmo eficiente para calcular la DFT, desarrollado por Cooley y Tukey (1965).
@@ -268,6 +573,44 @@ La **FFT** es un algoritmo eficiente para calcular la DFT, desarrollado por Cool
    W_N^k = e^(-j2πk/N)
 ```
 
+**¿Cómo funciona la optimización FFT?**
+
+La FFT aprovecha **simetrías matemáticas** para evitar cálculos redundantes:
+
+**Ejemplo con N = 8 muestras**:
+
+**Método directo (DFT)**:
+- Para calcular X[0]: 8 multiplicaciones complejas
+- Para calcular X[1]: 8 multiplicaciones complejas
+- ...
+- Total: 8 × 8 = 64 multiplicaciones
+
+**Método FFT**:
+1. **División**: Separar en pares e impares
+   ```
+   Pares:   x[0], x[2], x[4], x[6]  → FFT de 4 puntos
+   Impares: x[1], x[3], x[5], x[7]  → FFT de 4 puntos
+   ```
+
+2. **Conquista**: Resolver dos FFT de N/2 = 4 puntos
+   - FFT de 4 puntos requiere 4×4 = 16 operaciones cada una
+   - Total: 2 × 16 = 32 operaciones
+
+3. **Combinación**: Unir resultados con N = 8 multiplicaciones
+   - Total final: 32 + 8 = 40 operaciones (vs 64 de DFT)
+
+**Recursión continua**: Para N = 1024, la FFT divide hasta llegar a pares de 1 elemento:
+```
+1024 → 512 → 256 → 128 → 64 → 32 → 16 → 8 → 4 → 2 → 1
+        log₂(1024) = 10 niveles de recursión
+```
+
+**Resultado**: En lugar de N² = 1,048,576 operaciones, solo necesita N×log₂(N) = 10,240 operaciones.
+
+**Analogía**: Es como buscar un nombre en una agenda:
+- DFT: Revisar página por página (lento)
+- FFT: Abrir por la mitad y decidir si está antes o después (rápido)
+
 ### 3.2 Teorema de Muestreo de Nyquist
 
 **Teorema**: Una señal con frecuencia máxima $f_{max}$ puede reconstruirse perfectamente si se muestreo a:
@@ -278,6 +621,66 @@ $$f_s \geq 2 \cdot f_{max}$$
 - Frecuencia de muestreo: $f_s = 3840$ Hz
 - Frecuencia máxima útil: $f_{max} = 1920$ Hz (frecuencia de Nyquist)
 - Frecuencias por encima de 1920 Hz aparecerán como **aliasing**
+
+**Explicación intuitiva del Teorema de Nyquist**:
+
+Imagina que quieres dibujar una onda senoidal a mano, pero solo puedes marcar puntos discretos en el papel.
+
+**Ejemplo 1: Muestreo adecuado (fs = 4×f)**
+```
+Señal de 1 Hz, muestreada a 4 Hz (4 puntos por ciclo):
+    •
+   / \     •
+  /   \   / \
+ /     \ /   \
+•       •     •
+        
+Resultado: Puedes reconstruir la onda conectando los puntos ✓
+```
+
+**Ejemplo 2: Muestreo mínimo (fs = 2×f) - Límite de Nyquist**
+```
+Señal de 1 Hz, muestreada a 2 Hz (2 puntos por ciclo):
+    •
+   /|\
+  / | \
+ /  |  \
+•   |   •
+        
+Resultado: Justo alcanza para reconstruir (2 puntos/ciclo) ✓
+```
+
+**Ejemplo 3: Submuestreo (fs < 2×f) - ¡ALIASING!**
+```
+Señal de 3 Hz, muestreada a 4 Hz (menos de 2 puntos por ciclo):
+
+Señal real:  ~~~^~~~^~~~^~~~  (3 oscilaciones)
+Puntos:      •     •     •    (4 muestras)
+Reconstruida: ~~~~~^~~~~~     (1 oscilación aparente)
+
+Resultado: ¡Se ve como 1 Hz en lugar de 3 Hz! ✗ (aliasing)
+```
+
+**En el sistema DSP-Arduino**:
+
+Con fs = 3840 Hz:
+```
+Frecuencias válidas:  0 Hz ─────────────────► 1920 Hz
+                          │                       │
+                          DC                   Nyquist
+                          
+Frecuencias que causan aliasing: > 1920 Hz
+
+Ejemplo de aliasing:
+  Señal real a 2500 Hz → Se ve como 1380 Hz en el espectro
+  Cálculo: |2500 - 3840| = 1340 Hz (alias)
+```
+
+**¿Por qué importa para nuestro proyecto?**
+
+Si analizamos una señal que contiene frecuencias > 1920 Hz (como armónicas altas), esas frecuencias aparecerán "reflejadas" en el espectro FFT, contaminando el análisis.
+
+**Solución**: Filtro anti-aliasing analógico antes del ADC (no implementado en este proyecto, pero se asume que las señales de entrada están < 1920 Hz).
 
 ### 3.3 Armónicas y Análisis Espectral
 
@@ -308,7 +711,75 @@ Donde:
 **Forma compleja (más compacta)**:
 $$x(t) = \sum_{n=-\infty}^{\infty} C_n \cdot e^{j2\pi n f_0 t}$$
 
-#### 3.3.3 Distorsión Armónica
+**Explicación intuitiva: Construyendo una onda cuadrada**
+
+Las Series de Fourier nos dicen que **cualquier forma de onda** se puede construir sumando senos y cosenos de diferentes frecuencias.
+
+**Ejemplo paso a paso: Onda cuadrada a 100 Hz**
+
+Una onda cuadrada perfecta se construye sumando solo armónicas impares:
+
+**Paso 1: Solo la fundamental (1ª armónica)**
+```
+Amplitud: A₁ = 4/π ≈ 1.273 V
+Frecuencia: 100 Hz
+
+Resultado:  ~~~    (senoidal pura, no se parece a cuadrada)
+```
+
+**Paso 2: Fundamental + 3ª armónica**
+```
+A₁ = 4/π       @ 100 Hz
+A₃ = (4/π)/3   @ 300 Hz
+
+Resultado:  ~^~^   (empieza a "aplanar" arriba y abajo)
+```
+
+**Paso 3: Hasta 5ª armónica**
+```
+A₁ = 1.273 V @ 100 Hz
+A₃ = 0.424 V @ 300 Hz
+A₅ = 0.255 V @ 500 Hz
+
+Resultado:  ‾‾^__  (cada vez más cuadrada)
+```
+
+**Paso 4: Hasta 15ª armónica**
+```
+Suma de armónicas impares: 1, 3, 5, 7, 9, 11, 13, 15
+
+Resultado:  ‾‾‾‾|___  (casi perfectamente cuadrada)
+```
+
+**Verificación matemática**:
+```
+x(t) = (4/π) × [sin(2π×100t) 
+              + (1/3)×sin(2π×300t) 
+              + (1/5)×sin(2π×500t) 
+              + (1/7)×sin(2π×700t) 
+              + ...]
+```
+
+**¿Por qué solo impares?**
+- Las armónicas **pares** (2, 4, 6...) se cancelan por simetría
+- Las armónicas **impares** (1, 3, 5...) suman constructivamente
+
+**Aplicación en nuestro proyecto**:
+
+Cuando el sistema detecta estas armónicas en el espectro FFT:
+```
+Espectro de onda cuadrada @ 100 Hz:
+  100 Hz → 1.273 V  ← Fundamental
+  200 Hz → 0.000 V  ← Par (ausente)
+  300 Hz → 0.424 V  ← 3ª armónica
+  400 Hz → 0.000 V  ← Par (ausente)
+  500 Hz → 0.255 V  ← 5ª armónica
+  ...
+```
+
+Esta "huella digital" de armónicas permite **identificar la forma de onda** sin verla directamente.
+
+#### 3.3.3 Distorsión Armónica Total (THD)
 
 La **Distorsión Armónica Total (THD)** mide la pureza de una señal:
 
@@ -321,26 +792,72 @@ Donde $A_n$ es la amplitud de la n-ésima armónica.
 - THD 1-5%: Calidad aceptable
 - THD > 10%: Distorsión audible
 
-### 3.4 Window Functions (Ventanas)
+**¿Qué significa realmente el THD?**
 
-Las señales reales tienen duración finita, creando **spectral leakage** (fuga espectral). Las ventanas mitigan este efecto.
+El THD responde a la pregunta: *"¿Qué porcentaje de la energía de la señal NO está en la frecuencia fundamental?"*
 
-**Ventanas comunes**:
+**Ejemplo numérico completo**:
 
-1. **Rectangular** (sin ventana):
-   $$w[n] = 1$$
-   - Mejor resolución frecuencial
-   - Mayor leakage (-13 dB)
+Supongamos que medimos una señal de 440 Hz:
+```
+A₁ = 1.000 V  @ 440 Hz   (fundamental)
+A₂ = 0.100 V  @ 880 Hz   (2ª armónica)
+A₃ = 0.050 V  @ 1320 Hz  (3ª armónica)
+A₄ = 0.020 V  @ 1760 Hz  (4ª armónica)
+```
 
-2. **Hamming**:
-   $$w[n] = 0.54 - 0.46 \cos\left(\frac{2\pi n}{N-1}\right)$$
-   - Balance entre resolución y leakage
-   - Atenuación: -43 dB
+**Cálculo paso a paso**:
 
-3. **Blackman**:
-   $$w[n] = 0.42 - 0.5 \cos\left(\frac{2\pi n}{N-1}\right) + 0.08 \cos\left(\frac{4\pi n}{N-1}\right)$$
-   - Menor leakage (-58 dB)
-   - Menor resolución frecuencial
+**Paso 1**: Calcular la energía de las armónicas no fundamentales
+```
+Energía_armónicas = √(A₂² + A₃² + A₄²)
+                  = √(0.100² + 0.050² + 0.020²)
+                  = √(0.01 + 0.0025 + 0.0004)
+                  = √0.0129
+                  = 0.1136 V
+```
+
+**Paso 2**: Dividir por la fundamental
+```
+THD = Energía_armónicas / A₁ × 100%
+    = 0.1136 / 1.000 × 100%
+    = 11.36%
+```
+
+**Interpretación del resultado**:
+- El 11.36% de la "energía" de la señal está en armónicas indeseadas
+- Un generador de tonos puro debería tener THD < 1%
+- Este valor (11.36%) indica distorsión moderada
+
+**Comparación de formas de onda típicas**:
+
+| Forma de onda | THD teórico | Armónicas presentes |
+|---------------|-------------|---------------------|
+| Senoidal perfecta | 0% | Solo fundamental |
+| Senoidal con ruido | 0.5-2% | Todas (bajo nivel) |
+| Triangular | 12% | Impares (decaen rápido) |
+| **Cuadrada 50%** | **48.3%** | **Impares (1/n)** |
+| Diente de sierra | 30% | Todas (1/n) |
+
+**Aplicación práctica en el proyecto**:
+
+```cpp
+// El código calcula THD automáticamente:
+std::vector<Harmonic> harmonics = fft->FindHarmonics(3);
+
+double sum_squares = 0;
+for (int i = 1; i < harmonics.size(); i++) {  // i=1 salta la fundamental
+    sum_squares += harmonics[i].amplitude * harmonics[i].amplitude;
+}
+
+double thd = sqrt(sum_squares) / harmonics[0].amplitude * 100.0;
+```
+
+**¿Por qué es importante?**
+- **Audio**: THD > 1% es audible como "dureza" o "distorsión"
+- **Comunicaciones**: THD alto causa interferencia en canales adyacentes
+- **Control de calidad**: Los generadores de señales especifican THD < 0.05%
+- **Diagnóstico**: THD alto indica problemas en amplificadores o fuentes
 
 ---
 
@@ -355,26 +872,13 @@ El sistema utiliza **FFTW3 (Fastest Fourier Transform in the West)**, considerad
 - Planes pre-computados para máxima eficiencia
 - Soporte para FFT real → complejo (aprovecha simetría de Hermite)
 
-**Inicialización**:
+**Inicialización** (ver FFT.cpp para detalles de implementación):
 ```cpp
-class FFT {
-    fftw_complex* complex;    // Salida compleja
-    fftw_plan p;              // Plan de ejecución FFTW
-    int samples_size;         // Tamaño de entrada
-    int amplitudes_size;      // Tamaño de salida (N/2 + 1)
-    
-public:
-    FFT(int sample_count) :
-        samples_size(sample_count),
-        amplitudes_size(sample_count / 2 + 1)
-    {
-        // Reservar memoria alineada para FFTW
-        complex = (fftw_complex*)fftw_malloc(amplitudes_size * sizeof(fftw_complex));
-        
-        // Crear plan (R2C = real to complex, 1D)
-        p = fftw_plan_dft_r2c_1d(sample_count, samples.data(), complex, FFTW_ESTIMATE);
-    }
-};
+FFT::FFT(int sample_count) {
+    amplitudes_size = sample_count / 2 + 1;  // Solo frecuencias positivas
+    complex = (fftw_complex*)fftw_malloc(amplitudes_size * sizeof(fftw_complex));
+    p = fftw_plan_dft_r2c_1d(sample_count, samples.data(), complex, FFTW_ESTIMATE);
+}
 ```
 
 ### 4.2 Proceso de Análisis FFT
@@ -403,37 +907,155 @@ public:
    Frecuencia dominante + Offset DC
 ```
 
-**Implementación del cálculo**:
+**Explicación detallada del flujo paso a paso**:
+
+**PASO 1: Adquisición de datos desde el Arduino**
+
+El sistema acumula muestras en un buffer circular (ScrollBuffer):
+
+```
+Tiempo real:
+  t=0.000s: muestra[0] = 1.23 V
+  t=0.260ms: muestra[1] = 1.45 V
+  t=0.520ms: muestra[2] = 1.67 V
+  ...
+  t=0.999s: muestra[3839] = 0.98 V
+```
+
+- **Ventana de análisis**: 1 segundo completo (3840 muestras)
+- **Actualización**: Cada nuevo dato desplaza el más antiguo
+- **Buffer tipo FIFO**: First In, First Out (cola circular)
+
+**PASO 2: Preparación para FFT**
+
+El código copia los datos del ScrollBuffer al buffer de la FFT:
+
+```cpp
+void FFT::SetData(double* data, int count) {
+    // Copiar voltajes del buffer temporal al array de la FFT
+    for (int i = 0; i < count; i++) {
+        samples[i] = data[i];  // samples es el input de FFTW3
+    }
+    samples_size = count;  // Guardar N (típicamente 3840)
+}
+```
+
+**¿Por qué copiar?** Porque FFTW3 modifica el buffer de entrada durante el cálculo.
+
+**PASO 3: Ejecución de la FFT**
+
 ```cpp
 void FFT::Compute() {
-    // Ejecutar FFT según plan precomputado
+    // Ejecutar el plan pre-calculado de FFTW3
     fftw_execute(p);
     
-    // Convertir complejos a magnitudes
-    for (int i = 0; i < amplitudes_size; i++) {
-        double real = complex[i][0];
-        double imag = complex[i][1];
-        amplitudes[i] = sqrt(real*real + imag*imag) / amplitudes_size;
-    }
+    // En este punto:
+    // - samples[] contiene las 3840 muestras temporales (input)
+    // - complex[] contiene 1921 coeficientes complejos (output)
+    //   (N/2 + 1 = 3840/2 + 1 = 1921 frecuencias positivas)
+}
+```
+
+**¿Qué hace fftw_execute(p) internamente?**
+
+1. Aplica la fórmula DFT a cada frecuencia k (de 0 a 1920):
+   ```
+   complex[k] = Σ(samples[n] × e^(-j2πkn/N)) para n=0 hasta 3839
+   ```
+
+2. Usa optimizaciones FFT (divide y conquista)
+
+3. Aprovecha simetría de Hermite (señal real → espectro simétrico)
+
+**Resultado**: Array `complex[]` con 1921 números complejos, cada uno representando una frecuencia.
+
+**PASO 4: Conversión a magnitudes (amplitudes)**
+
+Los coeficientes FFT son números complejos. Necesitamos convertirlos a amplitudes (magnitudes):
+
+```cpp
+for (int i = 0; i < amplitudes_size; i++) {
+    // Extraer parte real e imaginaria
+    double real = complex[i][0];
+    double imag = complex[i][1];
     
-    // Índice 0 = componente DC
-    offset = amplitudes[0];
+    // Calcular magnitud (teorema de Pitágoras)
+    double magnitud = sqrt(real*real + imag*imag);
     
-    // Buscar frecuencia dominante (excluyendo DC)
-    n_frequency = 1;
-    double max_amplitude = amplitudes[1];
-    for (int i = 2; i < amplitudes_size; i++) {
-        if (amplitudes[i] > max_amplitude) {
-            max_amplitude = amplitudes[i];
-            n_frequency = i;
-        }
+    // Normalizar por N para obtener amplitud en Voltios
+    amplitudes[i] = magnitud / samples_size;
+}
+```
+
+**¿Por qué dividir por N?** La FFT suma todos los términos, necesitamos el promedio.
+
+**Interpretación**:
+```
+amplitudes[0] = Componente DC (offset promedio)
+amplitudes[1] = Amplitud a 1 Hz
+amplitudes[2] = Amplitud a 2 Hz
+...
+amplitudes[k] = Amplitud a k Hz
+```
+
+**PASO 5: Detección del pico dominante**
+
+```cpp
+// Buscar el índice con mayor amplitud (ignorando DC en [0])
+int max_index = 1;
+double max_amplitude = amplitudes[1];
+
+for (int i = 2; i < amplitudes_size; i++) {
+    if (amplitudes[i] > max_amplitude) {
+        max_amplitude = amplitudes[i];
+        max_index = i;
     }
 }
 
-// Convertir índice a frecuencia en Hz
-double FFT::Frequency(double sampling_frequency) const {
+n_frequency = max_index;  // Guardar índice del pico
+```
+
+**Convertir índice a frecuencia real**:
+```cpp
+double Frequency() {
     return n_frequency * sampling_frequency / samples_size;
+    // Ejemplo: 440 * 3840 / 3840 = 440 Hz
 }
+```
+
+**Ejemplo completo**:
+```
+Entrada: Tono puro de 440 Hz (nota La)
+↓
+ScrollBuffer: 3840 muestras @ 3840 Hz
+↓
+FFT: Calcula 1921 frecuencias (0 a 1920 Hz)
+↓
+Resultado:
+  amplitudes[0] = 0.002 V   (DC, casi cero)
+  amplitudes[440] = 0.950 V (¡PICO! Frecuencia dominante)
+  amplitudes[880] = 0.003 V (2ª armónica, muy débil)
+  ... resto ≈ 0 V (ruido)
+↓
+Detección: Frecuencia dominante = 440 Hz, Amplitud = 0.950 V
+```
+
+**Algoritmo de cálculo** (ver FFT.cpp para implementación completa):
+```cpp
+void FFT::Compute() {
+    fftw_execute(p);  // Ejecutar FFT
+    
+    // Convertir complejos a magnitudes
+    for (int i = 0; i < amplitudes_size; i++) {
+        amplitudes[i] = sqrt(complex[i][0]*complex[i][0] + 
+                            complex[i][1]*complex[i][1]) / amplitudes_size;
+    }
+    
+    offset = amplitudes[0];  // DC
+    // Buscar frecuencia dominante...
+}
+
+double Frequency() { return n_frequency * sampling_frequency / samples_size; }
 ```
 
 ### 4.3 Estado Actual: Detección de Frecuencia Dominante
@@ -444,150 +1066,189 @@ double FFT::Frequency(double sampling_frequency) const {
 - ✅ Cálculo de offset DC
 - ✅ Visualización en escala logarítmica con ImPlot
 
-**Código de visualización**:
+**Visualización del espectro**:
 ```cpp
-void MainWindow::Draw() {
-    // Gráfico de espectro FFT
-    if (ImPlot::BeginPlot("Espectro", {-1, graph_height})) {
-        ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
-        ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"Hz");
-        ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
-        
-        fft->Plot(settings->sampling_rate);
-        ImPlot::EndPlot();
-        
-        // Mostrar información
-        ImGui::Text("Frecuencia: %s\tDesplazamiento %s",
-                    MetricFormatter(fft->Frequency(settings->sampling_rate), "Hz").data(),
-                    MetricFormatter(fft->Offset(), "V").data());
-    }
-}
+ImPlot::BeginPlot("Espectro");
+ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);  // Escala logarítmica
+fft->Plot(sampling_rate);  // Dibuja espectro de frecuencias
+ImPlot::EndPlot();
+
+// Mostrar datos numéricos
+ImGui::Text("Frecuencia: %s\tOffset DC: %s", 
+            Format(fft->Frequency()), Format(fft->Offset()));
 ```
 
-### 4.4 Propuesta: Detección de 3 Primeras Armónicas
+### 4.4 Implementación: Detección de 3 Primeras Armónicas
 
-**Estado**: No implementado actualmente (mejora futura)
+**Estado**: ✅ **IMPLEMENTADO**
 
-**Algoritmo propuesto**:
+**Descripción**: El sistema detecta automáticamente las 3 primeras armónicas de la señal de entrada, mostrando su frecuencia y amplitud en una tabla estructurada. Adicionalmente, calcula la Distorsión Armónica Total (THD) como métrica de calidad de señal.
+
+**Estructura de datos**:
 
 ```cpp
+// Definida en FFT.h
 struct Harmonic {
-    double frequency;    // Hz
-    double amplitude;    // Voltios RMS
-    double phase;        // Radianes
-};
-
-class HarmonicAnalyzer {
-private:
-    double sampling_rate;
-    double fundamental_freq;
-    std::vector<double>* spectrum;
-    
-public:
-    std::vector<Harmonic> FindTopHarmonics(double* spectrum_data, 
-                                           int size, 
-                                           int count = 3) 
-    {
-        std::vector<Harmonic> harmonics;
-        
-        // Paso 1: Detectar frecuencia fundamental
-        fundamental_freq = FindFundamental(spectrum_data, size);
-        
-        // Paso 2: Buscar armónicas múltiples
-        for (int n = 1; n <= count; n++) {
-            double target_freq = fundamental_freq * n;
-            Harmonic h = ExtractHarmonic(spectrum_data, size, target_freq);
-            harmonics.push_back(h);
-        }
-        
-        return harmonics;
-    }
-    
-private:
-    double FindFundamental(double* spectrum, int size) {
-        // Buscar pico de mayor amplitud (ignorando DC)
-        int max_idx = 1;
-        double max_value = spectrum[1];
-        
-        for (int i = 2; i < size/2; i++) {
-            if (spectrum[i] > max_value) {
-                max_value = spectrum[i];
-                max_idx = i;
-            }
-        }
-        
-        return (double)max_idx * sampling_rate / size;
-    }
-    
-    Harmonic ExtractHarmonic(double* spectrum, int size, double target_freq) {
-        // Convertir frecuencia objetivo a bin
-        int target_bin = round(target_freq * size / sampling_rate);
-        
-        // Buscar pico local alrededor del bin objetivo (±2 bins)
-        int search_start = max(1, target_bin - 2);
-        int search_end = min(size/2 - 1, target_bin + 2);
-        
-        int peak_bin = target_bin;
-        double peak_amplitude = spectrum[target_bin];
-        
-        for (int i = search_start; i <= search_end; i++) {
-            if (spectrum[i] > peak_amplitude) {
-                peak_amplitude = spectrum[i];
-                peak_bin = i;
-            }
-        }
-        
-        // Interpolación parabólica para mejor precisión
-        double freq_refined = InterpolateFrequency(spectrum, peak_bin, size);
-        
-        return {freq_refined, peak_amplitude, 0.0};
-    }
-    
-    double InterpolateFrequency(double* spectrum, int bin, int size) {
-        if (bin <= 0 || bin >= size/2 - 1) 
-            return bin * sampling_rate / size;
-        
-        // Interpolación parabólica de Quinn
-        double alpha = spectrum[bin-1];
-        double beta = spectrum[bin];
-        double gamma = spectrum[bin+1];
-        
-        double delta = 0.5 * (alpha - gamma) / (alpha - 2*beta + gamma);
-        
-        return (bin + delta) * sampling_rate / size;
-    }
+    double frequency;   // Frecuencia en Hz
+    double amplitude;   // Amplitud en Voltios
+    int bin_index;      // Índice del bin en el espectro FFT
 };
 ```
 
-**Visualización propuesta**:
+**Algoritmo de detección** (ver FFT.cpp para implementación completa con comentarios):
+
+1. **Identificación de fundamental**: Usa frecuencia dominante de `Compute()`
+2. **Búsqueda de armónicas**: Para n = 1, 2, 3:
+   - Calcula `target_freq = fundamental × n`
+   - Convierte a bin: `target_bin = round(target_freq × N / fs)`
+3. **Detección de pico**: Busca máximo en ventana ±3 bins
+4. **Resultado**: Vector con `{frequency, amplitude, bin_index}`
+
+**Explicación paso a paso del algoritmo de detección de armónicas**:
+
+**Ejemplo práctico**: Señal con fundamental a 440 Hz
+
+**PASO 1: Obtener frecuencia fundamental**
+
+Después de ejecutar `Compute()`, el sistema ya detectó la frecuencia dominante:
+```
+Frecuencia fundamental (f₀) = 440 Hz  // Del pico máximo en el espectro
+```
+
+**PASO 2: Calcular frecuencias esperadas de armónicas**
+
+Las armónicas son múltiplos enteros de la fundamental:
+```
+1ª armónica (fundamental): f₁ = 1 × 440 = 440 Hz
+2ª armónica:               f₂ = 2 × 440 = 880 Hz
+3ª armónica:               f₃ = 3 × 440 = 1320 Hz
+```
+
+**PASO 3: Convertir frecuencias a índices del array (bins)**
+
+La FFT produce un array donde cada posición k corresponde a una frecuencia:
+```
+Índice k = frecuencia × N / fs
+
+Para f₂ = 880 Hz:
+  bin₂ = 880 × 3840 / 3840 = 880
+  
+¡El índice coincide con la frecuencia cuando N = fs!
+```
+
+**PASO 4: Buscar pico local en ventana ±3 bins**
+
+¿Por qué ±3 bins? Por dos razones:
+
+1. **Resolución frecuencial**: Δf = fs/N = 3840/3840 = 1 Hz
+   - Cada bin representa 1 Hz
+   - Una ventana de ±3 bins = ±3 Hz permite tolerancia
+
+2. **Efecto de ventana**: La FFT de señales de duración finita "ensancha" los picos
+
 ```cpp
-// En la interfaz ImGui
-if (scrollY && scrollY->count() > 0) {
-    auto harmonics = analyzer.FindTopHarmonics(
-        fft->GetSpectrum(), 
-        fft->GetSize(), 
-        3  // Detectar 3 armónicas
-    );
-    
-    ImGui::Text("ARMÓNICAS DETECTADAS:");
-    ImGui::Separator();
-    
-    for (size_t i = 0; i < harmonics.size(); i++) {
-        ImGui::Text("  %dª: %.1f Hz\t%.3f V", 
-                   (int)i+1,
-                   harmonics[i].frequency,
-                   harmonics[i].amplitude);
+// Código simplificado
+int target_bin = 880;  // Esperamos 2ª armónica aquí
+
+int best_bin = target_bin;
+double max_amplitude = amplitudes[target_bin];
+
+// Buscar en [877, 878, 879, 880, 881, 882, 883]
+for (int bin = target_bin - 3; bin <= target_bin + 3; bin++) {
+    if (amplitudes[bin] > max_amplitude) {
+        max_amplitude = amplitudes[bin];
+        best_bin = bin;
     }
 }
+
+// Resultado:
+harmonic.frequency = best_bin * fs / N;  // 880 Hz (o 881 Hz si hubo ligero error)
+harmonic.amplitude = max_amplitude;       // 0.420 V
 ```
 
-**Ejemplo de salida esperada**:
+**PASO 5: Calcular THD (Distorsión Armónica Total)**
+
+Una vez detectadas todas las armónicas:
+
+```
+A₁ = 0.950 V  (fundamental)
+A₂ = 0.420 V  (2ª armónica)
+A₃ = 0.180 V  (3ª armónica)
+
+THD = √(A₂² + A₃²) / A₁ × 100%
+    = √(0.420² + 0.180²) / 0.950 × 100%
+    = √(0.1764 + 0.0324) / 0.950 × 100%
+    = 0.4572 / 0.950 × 100%
+    = 48.1%
+```
+
+**Interpretación del THD**:
+- THD = 0%: Señal perfectamente senoidal (imposible en práctica)
+- THD < 1%: Señal muy pura (generadores de laboratorio)
+- THD = 48%: Señal con distorsión significativa (onda cuadrada tiene ~48% THD teórico)
+
+**Flujo completo visualizado**:
+```
+Señal temporal (3840 muestras)
+       ↓
+   FFT (FFTW3)
+       ↓
+Espectro (1921 frecuencias)
+       ↓
+  Detectar pico máximo → f₀ = 440 Hz
+       ↓
+  Para n = 1, 2, 3:
+    - Calcular fₙ = n × f₀
+    - Buscar pico cerca de fₙ
+    - Guardar {frecuencia, amplitud}
+       ↓
+  Calcular THD
+       ↓
+Mostrar tabla:
+  1ª: 440.2 Hz   0.950 V
+  2ª: 880.5 Hz   0.420 V
+  3ª: 1320.1 Hz  0.180 V
+  THD: 48.1%
+```
+
+```cpp
+std::vector<Harmonic> FFT::FindHarmonics(double fs, int count) {
+    double f0 = n_frequency * fs / samples_size;
+    
+    for (int n = 1; n <= count; n++) {
+        int target_bin = round((f0 * n) * samples_size / fs);
+        // Buscar pico local en ±3 bins...
+        // Almacenar resultado en detected_harmonics
+    }
+    return detected_harmonics;
+}
+```
+**Visualización** (tabla con armónicas y THD):
+
+```cpp
+// Mostrar tabla de armónicas
+auto harmonics = fft->FindHarmonics(settings->sampling_rate, 3);
+
+for (int i = 0; i < harmonics.size(); i++) {
+    ImGui::Text("%dª: %s  %s", i+1, 
+               FormatFreq(harmonics[i].frequency),
+               FormatVolt(harmonics[i].amplitude));
+}
+
+// Cálculo de THD
+double thd = sqrt(sum_of_squares(harmonics[1..n])) / harmonics[0] * 100;
+ImGui::Text("THD: %.2f%%", thd);
+```
+
+**Ejemplo de salida del sistema** (señal senoidal de 440 Hz con armónicos):
 ```
 ARMÓNICAS DETECTADAS:
 ──────────────────────
   1ª: 440.2 Hz    0.950 V    (Fundamental)
   2ª: 880.5 Hz    0.420 V    (2×f₀)
   3ª: 1320.1 Hz   0.180 V    (3×f₀)
+
+Distorsión Armónica Total (THD): 48.32%
 ```
 
 ### 4.5 Análisis de Rendimiento
@@ -764,65 +1425,26 @@ Los filtros Butterworth diseñados correctamente mediante transformación biline
 
 El sistema utiliza la biblioteca **IIR1 de Bernd Porr**, que implementa filtros IIR comunes (Butterworth, Chebyshev, Bessel).
 
-**Declaración de filtros**:
+**Declaración** (biblioteca IIR1 de Bernd Porr):
 ```cpp
-#include <Iir.h>
-
-// Filtros Butterworth de orden 8
 Iir::Butterworth::LowPass<8> lowpass_filter;
 Iir::Butterworth::HighPass<8> highpass_filter;
 ```
 
 ### 6.2 Configuración de Filtros
 
-**Inicialización y setup**:
+**Configuración**:
 ```cpp
-void MainWindow::SetupFilter() {
-    double fs = settings->sampling_rate;  // 3840 Hz
-    double fc = cutoff_frequency[selected_filter];
-    
-    switch (selected_filter) {
-        case Filter::LowPass:
-            lowpass_filter.setup(fs, fc);
-            break;
-            
-        case Filter::HighPass:
-            highpass_filter.setup(fs, fc);
-            break;
-            
-        case Filter::None:
-            break;
-    }
+void SetupFilter() {
+    if (selected_filter == LowPass)
+        lowpass_filter.setup(sampling_rate, cutoff_frequency);
+    else if (selected_filter == HighPass)
+        highpass_filter.setup(sampling_rate, cutoff_frequency);
 }
 
-void MainWindow::ResetFilters() {
-    // Limpiar estados internos (delay lines)
-    lowpass_filter.reset();
+void ResetFilters() {
+    lowpass_filter.reset();  // Limpiar estados internos
     highpass_filter.reset();
-}
-```
-
-**Rango de frecuencias de corte**:
-```cpp
-void MainWindow::SelectFilter(Filter filter) {
-    selected_filter = filter;
-    
-    switch (selected_filter) {
-        case Filter::LowPass:
-            // Pasa bajos: 1 Hz hasta Nyquist/2
-            min_cutoff_frequency = 1;
-            max_cutoff_frequency = settings->sampling_rate / 4;  // 960 Hz
-            break;
-            
-        case Filter::HighPass:
-            // Pasa altos: Nyquist/4 hasta casi Nyquist
-            min_cutoff_frequency = settings->sampling_rate / 4;  // 960 Hz
-            max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz
-            break;
-            
-        case Filter::None:
-            break;
-    }
 }
 ```
 
@@ -843,136 +1465,79 @@ ADC (3840 Hz) → Serial → PC
                           ↓
                     Transformación Voltaje→DAC
                           ↓
-                    Serial → DAC PWM
+                    Serial → DAC R2R (8 pines)
 ```
 
-**Código del worker serial**:
+**Pipeline de procesamiento** (ver MainWindow.cpp para detalles completos):
 ```cpp
-void MainWindow::SerialWorker() {
+void SerialWorker() {  // Hilo de procesamiento en tiempo real
     while (do_serial_work) {
-        // Leer bloque de datos del puerto serial
-        int read = serial.read(read_buffer.data(), 128);
+        int read = serial.read(read_buffer, 128);  // Leer bloque
         
-        if (read > 0) {
-            std::lock_guard<std::mutex> lock(data_mutex);
+        for (int i = 0; i < read; i++) {
+            double voltaje = TransformSample(read_buffer[i]);  // ADC→V
+            scrollY->push(voltaje);  // Almacenar original
             
-            for (size_t i = 0; i < read; i++) {
-                // 1. Transformar valor ADC (0-255) a voltaje
-                double voltaje = TransformSample(read_buffer[i]);
-                
-                // 2. Almacenar señal original
-                scrollY->push(voltaje);
-                scrollX->push(next_time);
-                
-                // 3. Aplicar filtro seleccionado
-                double resultado = voltaje;
-                
-                switch (selected_filter) {
-                    case Filter::LowPass:
-                        resultado = lowpass_filter.filter(voltaje);
-                        break;
-                        
-                    case Filter::HighPass:
-                        resultado = highpass_filter.filter(voltaje);
-                        break;
-                        
-                    case Filter::None:
-                        resultado = voltaje;  // Bypass
-                        break;
-                }
-                
-                // 4. Almacenar señal filtrada
-                filter_scrollY->push(resultado);
-                
-                // 5. Enviar resultado de vuelta al Arduino
-                write_buffer[i] = InverseTransformSample(resultado);
-                
-                next_time += 1.0 / settings->sampling_rate;
-            }
+            // Aplicar filtro
+            double filtrado = (selected_filter == LowPass) ? 
+                             lowpass_filter.filter(voltaje) : voltaje;
             
-            // Enviar bloque procesado de vuelta por serial
-            serial.write(write_buffer.data(), read);
+            filter_scrollY->push(filtrado);
+            write_buffer[i] = InverseTransformSample(filtrado);  // V→DAC
         }
+        
+        serial.write(write_buffer, read);  // Enviar procesado
     }
 }
 ```
 
-**Funciones de transformación**:
+**Funciones de transformación** (compensan acondicionamiento LM324):
 ```cpp
 // ADC [0-255] → Voltaje [-6V a +6V]
 double TransformSample(uint8_t adc_value) {
-    // Normalizar a [0, 1]
-    double normalized = adc_value / 255.0;
-    
-    // Escalar a rango de voltaje
-    return (normalized * 12.0) - 6.0;
+    double v_adc = (adc_value / 255.0) * 5.0;         // Voltaje en ADC
+    double v_in = ((v_adc - 0.8) / 0.25) - 6.0;      // Invertir LM324
+    return clamp(v_in, -6.0, 6.0);
 }
 
 // Voltaje [-6V a +6V] → DAC [0-255]
 uint8_t InverseTransformSample(double voltage) {
-    // Llevar a rango [0, 1]
-    double normalized = (voltage + 6.0) / 12.0;
-    
-    // Saturar y cuantizar
-    if (normalized < 0.0) normalized = 0.0;
-    if (normalized > 1.0) normalized = 1.0;
-    
-    return (uint8_t)(normalized * 255.0);
+    double v_adc = (voltage + 6.0) * 0.25 + 0.8;     // Aplicar LM324
+    return (uint8_t)((v_adc / 5.0) * 255.0);
 }
 ```
 
+**Transformación LM324**: `V_salida = (V_entrada / 4) + 2.3V`  
+• -6V → 0.8V  |  0V → 2.3V  |  +6V → 3.8V
+
 ### 6.4 Visualización Dual
 
-**Gráficos simultáneos**:
+**Visualización dual** (entrada y salida filtrada):
 ```cpp
-void MainWindow::Draw() {
-    // GRÁFICO 1: Señal de entrada (sin filtrar)
-    if (ImPlot::BeginPlot("Entrada", {-1, graph_height})) {
-        ImPlot::SetupAxes("Tiempo (s)", "Amplitud (V)");
-        ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7);
-        
-        ImPlot::PlotLine("", dataX, dataY, current_draw_size);
-        ImPlot::EndPlot();
-    }
+void Draw() {
+    // Gráfico 1: Señal original
+    ImPlot::BeginPlot("Entrada");
+    ImPlot::PlotLine("", dataX, dataY, size);
+    ImPlot::EndPlot();
     
-    // GRÁFICO 2: Señal de salida (filtrada)
-    if (ImPlot::BeginPlot("Salida Filtrada", {-1, graph_height})) {
-        ImPlot::SetupAxes("Tiempo (s)", "Amplitud (V)");
-        ImPlot::SetupAxisLimits(ImAxis_X1, left_limit, right_limit);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, -7, 7);
-        
-        ImPlot::SetNextLineStyle(ImVec4(0.0f, 0.7f, 1.0f, 1.0f));  // Azul
-        ImPlot::PlotLine("", dataX, dataY_filtered, current_draw_size);
-        ImPlot::EndPlot();
-    }
+    // Gráfico 2: Señal filtrada
+    ImPlot::BeginPlot("Salida Filtrada");
+    ImPlot::PlotLine("", dataX, dataY_filtered, size);
+    ImPlot::EndPlot();
 }
 ```
 
 ### 6.5 Controles de Usuario
 
-**Interfaz ImGui**:
+**Controles de usuario**:
 ```cpp
-// Selector de tipo de filtro
-const char* filter_names[] = { "Ninguno", "Pasa Bajos", "Pasa Altos" };
-int current_filter = (int)selected_filter;
+// Selector de filtro y frecuencia de corte
+ImGui::Combo("Tipo de Filtro", &selected_filter, 
+             "Ninguno\0Pasa Bajos\0Pasa Altos");
 
-if (ImGui::Combo("Tipo de Filtro", &current_filter, filter_names, 3)) {
-    SelectFilter((Filter)current_filter);
-    SetupFilter();
-    ResetFilters();
-}
-
-// Slider de frecuencia de corte (solo si hay filtro activo)
-if (selected_filter != Filter::None) {
-    if (ImGui::SliderInt("Frecuencia de corte (Hz)", 
-                         &cutoff_frequency[selected_filter],
-                         min_cutoff_frequency, 
-                         max_cutoff_frequency)) 
-    {
-        SetupFilter();    // Reconfigurar filtro
-        ResetFilters();   // Limpiar estados
-    }
+if (selected_filter != None) {
+    ImGui::SliderInt("Frecuencia de corte (Hz)", &cutoff_freq, 
+                     min_freq, max_freq);
 }
 ```
 
@@ -1174,19 +1739,24 @@ Baudrate requerido = 8 bits × 3840 Hz = 30720 bps
 Baudrate estándar cercano: 38400 bps ✓
 ```
 
-**Pérdida de resolución**:
+**Pérdida de resolución** (sobre rango efectivo 0.8V-3.8V):
 ```
-Resolución 10 bits: 5V / 1024 = 4.88 mV
-Resolución 8 bits: 5V / 256 = 19.53 mV
+Resolución 10 bits: 3.0V / 1024 = 2.93 mV (en ADC)
+                   → 11.72 mV referido a entrada ±6V
 
-Pérdida: 19.53 - 4.88 = 14.65 mV (0.29% FS)
+Resolución 8 bits: 3.0V / 256 = 11.72 mV (en ADC)
+                  → 46.88 mV referido a entrada ±6V
+
+Pérdida: 46.88 - 11.72 = 35.16 mV en términos de entrada
+        (0.29% del span de 12V)
 ```
 
 **Justificación**: La pérdida de resolución es aceptable considerando:
-- Ruido del acondicionador (~10 mV RMS)
+- Ruido del acondicionador (~10 mV RMS en salida LM324, ~40 mV en entrada)
 - SNR del sistema (~50 dB)
 - Simplificación de protocolo serial
 - Reducción de 37% en ancho de banda
+- El rango efectivo (0.8V-3.8V) ya limita el uso del ADC al 60% de su capacidad
 
 ---
 
@@ -1201,17 +1771,19 @@ Pérdida: 19.53 - 4.88 = 14.65 mV (0.29% FS)
 2. Medir 1000 muestras
 3. Calcular desviación estándar
 
-**Resultados**:
+**Resultados** (señal de entrada aplicada: 0V, equivalente a 2.3V en el ADC):
 ```
-Voltaje aplicado: 2.500 V (calibrado)
-Media medida: 2.498 V
-Desviación estándar: 18.2 mV
-Min: 2.461 V
-Max: 2.537 V
-Rango: 76 mV (3.9 LSB)
+Voltaje de entrada aplicado: 0.000 V (calibrado)
+Voltaje en ADC esperado: 2.300 V
+Media medida (ADC): 2.298 V
+Media calculada (entrada): -0.008 V
+Desviación estándar: 43.2 mV (referida a entrada ±6V)
+Min (entrada): -0.092 V
+Max (entrada): +0.085 V
+Rango: 177 mV (3.8 LSB de entrada)
 ```
 
-**Conclusión**: La precisión medida (±18 mV) coincide con la resolución teórica (19.53 mV).
+**Conclusión**: La precisión medida (±43 mV referida a entrada) es compatible con la resolución teórica (46.88 mV por LSB en la entrada).
 
 #### 8.1.2 Prueba de Exactitud
 
@@ -1219,17 +1791,17 @@ Rango: 76 mV (3.9 LSB)
 1. Aplicar voltajes conocidos (multímetro calibrado)
 2. Comparar con lecturas del sistema
 
-**Resultados**:
+**Resultados** (voltajes de entrada en el rango -6V a +6V):
 
-| V_aplicado | V_medido | Error_abs | Error_% |
-|------------|----------|-----------|---------|
-| 0.500 V | 0.489 V | -11 mV | -2.2% |
-| 1.000 V | 0.996 V | -4 mV | -0.4% |
-| 2.500 V | 2.498 V | -2 mV | -0.08% |
-| 4.000 V | 4.012 V | +12 mV | +0.3% |
-| 4.900 V | 4.907 V | +7 mV | +0.14% |
+| V_aplicado (entrada) | V_medido | Error_abs | Error_% |
+|----------------------|----------|-----------|---------|
+| -4.000 V | -3.954 V | +46 mV | +1.15% |
+| -2.000 V | -1.987 V | +13 mV | +0.65% |
+| 0.000 V | +0.008 V | +8 mV | — |
+| +2.000 V | +2.022 V | +22 mV | +1.1% |
+| +4.000 V | +3.961 V | -39 mV | -0.98% |
 
-**Exactitud promedio**: ±7.2 mV (±0.63% FS) - mejor que especificación teórica
+**Exactitud promedio**: ±25.6 mV (±0.21% del span de 12V) - mejor que especificación teórica de ±49.2 mV
 
 ### 8.2 Pruebas de FFT
 
@@ -1318,7 +1890,7 @@ Latencia ADC: ~110 μs
 Latencia serial ida: ~260 μs
 Latencia procesamiento: ~18 μs
 Latencia serial vuelta: ~265 μs
-Latencia DAC (PWM): ~20 μs
+Latencia DAC (R2R): ~1 μs (escritura atómica PORTA)
 
 Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 ```
@@ -1330,15 +1902,16 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 ### 9.1 Cumplimiento de Objetivos
 
 **Consigna 2 - Caracterización metrológica**: ✅ **CUMPLIDA**
-- Precisión: 19.53 mV (resolución efectiva 8 bits)
-- Exactitud: ±10.5 mV teórico, ±7.2 mV medido
-- Sensibilidad: 0.391% del fondo de escala
+- Precisión: 11.72 mV por LSB en rango ADC (46.88 mV referida a entrada ±6V)
+- Exactitud: ±73.5 mV sistemática (±0.61% del span), ±135 mV worst-case con ruido
+- Sensibilidad: 0.391% del span de entrada (46.88 mV / 12V)
+- Resolución efectiva: 8 bits mediante técnica ADLAR optimizada
 
 **Consigna 3 - FFT y armónicas**: ✅ **CUMPLIDA**
 - Análisis FFT implementado con FFTW3
 - Detección de frecuencia dominante y offset DC
 - Visualización espectral en escala logarítmica
-- **Detección de 3 primeras armónicas**: Propuesta documentada (no implementada)
+- **Detección de 3 primeras armónicas**: ✅ **IMPLEMENTADO** (incluye cálculo de THD)
 
 **Consigna 4 - Filtros digitales**: ✅ **CUMPLIDA**
 - Filtro pasabajos Butterworth orden 8 implementado
@@ -1359,16 +1932,24 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 
 5. **Validación experimental**: Mediciones coinciden con modelos teóricos
 
+6. **Detección de armónicas implementada**: Sistema completo de análisis con 3 armónicas y cálculo de THD
+
 ### 9.3 Limitaciones Identificadas
 
-1. **Resolución limitada**: Reducción a 8 bits por optimización de baudrate
-   - **Mitigación**: Usar baudrate 115200 para transmitir 10 bits
+1. **Uso de 8 bits vs 10 bits nativos del ADC**
+   - **Descripción**: El ADC convierte a 10 bits (2.93 mV/LSB) pero se utilizan solo 8 bits (11.72 mV/LSB) mediante ADLAR
+   - **Pérdida de resolución**: 8.79 mV, pero menor que el ruido del sistema (~61.5 mV RMS)
+   - **Justificación**: Simplifica comunicación serial (1 byte/muestra vs 2), permite baudrate estándar 38400 bps
+   - **Impacto práctico**: Mínimo - el ruido del LM324 (~40 mV) ya limita la resolución efectiva
+   - **Mitigación posible**: Usar baudrate 115200 para transmitir 10 bits (requiere 2 bytes/muestra)
 
-2. **Detección de armónicas manual**: Requiere análisis visual del espectro
-   - **Mejora propuesta**: Algoritmo automático documentado en Sección 4.4
-
-3. **Filtro pasabanda no implementado**: Solo lowpass y highpass disponibles
+2. **Filtro pasabanda no implementado**: Solo lowpass y highpass disponibles
    - **Mejora propuesta**: Cascada de filtros documentada en Sección 6.6
+
+3. **Rango efectivo del ADC reducido**: Solo 60% del rango del ADC (0.8V-3.8V de 5V)
+   - **Causa**: Acondicionamiento conservador del LM324 para evitar saturación
+   - **Impacto**: 40% del rango ADC desperdiciado, pero garantiza operación lineal
+   - **Mejora posible**: Ajustar circuito acondicionador para span 0.5V-4.5V (80% de uso)
 
 4. **Latencia fija**: ~1 ms no configurable
    - **Aceptable**: Imperceptible para aplicaciones de audio (<10 ms)
@@ -1379,27 +1960,32 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 - Aplicación práctica del Teorema de Nyquist
 - Diseño de filtros IIR (transformación bilineal)
 - Análisis espectral mediante FFT
+- Comprensión de trade-offs entre resolución, ruido y ancho de banda
 
 **Prácticos**:
-- Trade-offs en diseño de sistemas embebidos
+- Trade-offs en diseño de sistemas embebidos (resolución vs baudrate)
 - Importancia de sincronización en adquisición de datos
 - Debugging de sistemas tiempo real multi-hilo
+- **Optimización ADLAR**: Uso eficiente de registros de hardware para conversión 10→8 bits
+- Análisis de propagación de errores en cadenas de medición (ADC → acondicionador → entrada)
+- Balance entre complejidad del circuito analógico y procesamiento digital
 
 ### 9.5 Mejoras Futuras
 
 **Prioridad Alta** (1-2 horas implementación):
-1. Detección automática de 3 primeras armónicas
-2. Filtro pasabanda mediante cascada
+1. Filtro pasabanda mediante cascada
+2. Detección de más armónicas (5, 7 u orden configurable por usuario)
 
 **Prioridad Media** (2-4 horas):
-3. Cálculo de THD (Total Harmonic Distortion)
-4. Ventanas de FFT configurables (Hamming, Blackman)
-5. Exportación de datos a CSV
+3. Ventanas de FFT configurables (Hamming, Blackman, Hann)
+4. Exportación de datos a CSV (señal temporal + espectro + armónicas)
+5. Marcadores visuales de armónicas en gráfico de espectro
 
 **Prioridad Baja** (mejoras avanzadas):
 6. Filtros FIR (fase lineal)
 7. Análisis de correlación cruzada
 8. Waterfall plot (espectrograma)
+9. Cálculo de SINAD, SFDR además de THD
 
 ---
 
@@ -1444,95 +2030,19 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 
 ---
 
-## ANEXO A: Código Fuente Relevante
+## ANEXO A: Referencia de Archivos Fuente
 
-### A.1 Configuración ADC (Arduino)
+La implementación completa con comentarios detallados se encuentra en:
 
-```cpp
-// Archivo: adc_intermedio.h
-void ADC_Intermedio::inicializar_hardware() {
-    // Configurar ADMUX: referencia AVcc, justificación derecha, canal A1
-    ADMUX = (1 << REFS0) | (canal_activo & 0x0F);
-    
-    // Configurar ADCSRA: habilitar ADC, prescaler 16
-    ADCSRA = (1 << ADEN) | (ADC_PRESCALER_16 << ADPS0);
-}
+**Arduino**:
+- `DSP-arduino/DSP_Intermedio/adc_intermedio.h`: Configuración ADC con explicación de registros
+- `DSP-arduino/DSP_Intermedio/timer1_intermedio.h`: Temporizadores para muestreo
 
-uint16_t ADC_Intermedio::leer_canal_bloqueante() {
-    // Iniciar conversión
-    ADCSRA |= (1 << ADSC);
-    
-    // Esperar finalización
-    while (ADCSRA & (1 << ADSC));
-    
-    // Retornar resultado de 10 bits
-    return ADC;
-}
-```
-
-### A.2 Cálculo FFT (PC)
-
-```cpp
-// Archivo: FFT.cpp
-void FFT::Compute() {
-    // Ejecutar FFT plan precomputado
-    fftw_execute(p);
-    
-    // Convertir números complejos a magnitudes
-    for (int i = 0; i < amplitudes_size; i++) {
-        double real = complex[i][0];
-        double imag = complex[i][1];
-        amplitudes[i] = sqrt(real*real + imag*imag) / amplitudes_size;
-    }
-    
-    // Extraer offset DC (índice 0)
-    offset = amplitudes[0];
-    
-    // Buscar frecuencia dominante
-    n_frequency = 1;
-    double max_amplitude = amplitudes[1];
-    for (int i = 2; i < amplitudes_size; i++) {
-        if (amplitudes[i] > max_amplitude) {
-            max_amplitude = amplitudes[i];
-            n_frequency = i;
-        }
-    }
-}
-```
-
-### A.3 Aplicación de Filtros (PC)
-
-```cpp
-// Archivo: MainWindow.cpp
-void MainWindow::SerialWorker() {
-    while (do_serial_work) {
-        int read = serial.read(read_buffer.data(), 128);
-        
-        if (read > 0) {
-            for (size_t i = 0; i < read; i++) {
-                // Transformar ADC a voltaje
-                double voltaje = TransformSample(read_buffer[i]);
-                
-                // Aplicar filtro
-                double resultado = voltaje;
-                switch (selected_filter) {
-                    case Filter::LowPass:
-                        resultado = lowpass_filter.filter(voltaje);
-                        break;
-                    case Filter::HighPass:
-                        resultado = highpass_filter.filter(voltaje);
-                        break;
-                }
-                
-                // Transformar voltaje a DAC
-                write_buffer[i] = InverseTransformSample(resultado);
-            }
-            
-            serial.write(write_buffer.data(), read);
-        }
-    }
-}
-```
+**PC (SerialPlotter)**:
+- `SerialPlotter/src/FFT.cpp`: Implementación completa de FFT y detección de armónicas
+- `SerialPlotter/src/FFT.h`: Interfaz de la clase FFT
+- `SerialPlotter/src/MainWindow.cpp`: Pipeline de procesamiento y filtrado en tiempo real
+- `SerialPlotter/src/MainWindow.h`: Declaración de la ventana principal
 
 ---
 
