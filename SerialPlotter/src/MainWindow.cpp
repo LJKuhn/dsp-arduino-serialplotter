@@ -871,8 +871,8 @@ void MainWindow::Draw()
                 ImGui::Text("ARMÓNICAS DETECTADAS:");
                 ImGui::Spacing();
                 
-                // Detectar las 3 primeras armónicas
-                auto harmonics = fft->FindHarmonics(settings->sampling_rate, 3);
+                // Detectar las 5 primeras armónicas
+                auto harmonics = fft->FindHarmonics(settings->sampling_rate, 5);
                 
                 // Mostrar tabla con formato estructurado
                 if (!harmonics.empty()) {

@@ -865,405 +865,541 @@ double thd = sqrt(sum_squares) / harmonics[0].amplitude * 100.0;
 
 ### 4.1 Biblioteca FFTW3
 
-El sistema utiliza **FFTW3 (Fastest Fourier Transform in the West)**, considerada la implementación más eficiente de FFT.
+El sistema utiliza **FFTW3 (Fastest Fourier Transform in the West)**, una biblioteca especializada que calcula la Transformada Rápida de Fourier con máxima eficiencia.
 
-**Características**:
-- Optimizada con instrucciones SIMD (SSE, AVX)
-- Planes pre-computados para máxima eficiencia
-- Soporte para FFT real → complejo (aprovecha simetría de Hermite)
+**¿Qué es FFTW3?**
 
-**Inicialización** (ver FFT.cpp para detalles de implementación):
+FFTW3 es una implementación optimizada del algoritmo FFT que convierte señales del dominio temporal (voltaje vs tiempo) al dominio frecuencial (amplitud vs frecuencia). Es utilizada internamente por software profesional como MATLAB, Octave, NumPy/SciPy, y muchas aplicaciones de audio.
+
+**Características principales:**
+
+1. **Optimización SIMD**: Utiliza instrucciones especiales del procesador (SSE, AVX) que procesan múltiples datos simultáneamente, acelerando cálculos hasta 8× respecto a código normal.
+
+2. **Planes precomputados**: Analiza el tamaño de datos una sola vez y genera una estrategia optimizada ("plan") que reutiliza en cálculos posteriores.
+
+3. **Simetría de Hermite**: Para señales reales (como voltajes), aprovecha que el espectro es simétrico. Solo calcula mitad de las frecuencias, ahorrando 50% de tiempo y memoria.
+
+**Inicialización del sistema FFT:**
+
+Cuando se crea el objeto FFT, se reserva memoria y se genera el plan de ejecución:
+
 ```cpp
 FFT::FFT(int sample_count) {
-    amplitudes_size = sample_count / 2 + 1;  // Solo frecuencias positivas
+    // 1. Calcular cuántos bins de frecuencia necesitamos
+    amplitudes_size = sample_count / 2 + 1;  
+    
+    // 2. Reservar memoria para resultados complejos
     complex = (fftw_complex*)fftw_malloc(amplitudes_size * sizeof(fftw_complex));
+    
+    // 3. Crear plan de ejecución
     p = fftw_plan_dft_r2c_1d(sample_count, samples.data(), complex, FFTW_ESTIMATE);
 }
 ```
 
-### 4.2 Proceso de Análisis FFT
+**Explicación línea por línea:**
 
-**Pipeline de procesamiento**:
-
-```
-1. Adquisición de datos
-   ↓
-   ScrollBuffer (hasta 3840 muestras = 1 segundo)
-   ↓
-2. Carga en FFT
-   ↓
-   fft->SetData(data, count)
-   ↓
-3. Ejecución FFT
-   ↓
-   fftw_execute(p)
-   ↓
-4. Cálculo de magnitudes
-   ↓
-   magnitude[k] = √(real² + imag²) / N
-   ↓
-5. Detección de picos
-   ↓
-   Frecuencia dominante + Offset DC
-```
-
-**Explicación detallada del flujo paso a paso**:
-
-**PASO 1: Adquisición de datos desde el Arduino**
-
-El sistema acumula muestras en un buffer circular (ScrollBuffer):
-
-```
-Tiempo real:
-  t=0.000s: muestra[0] = 1.23 V
-  t=0.260ms: muestra[1] = 1.45 V
-  t=0.520ms: muestra[2] = 1.67 V
-  ...
-  t=0.999s: muestra[3839] = 0.98 V
-```
-
-- **Ventana de análisis**: 1 segundo completo (3840 muestras)
-- **Actualización**: Cada nuevo dato desplaza el más antiguo
-- **Buffer tipo FIFO**: First In, First Out (cola circular)
-
-**PASO 2: Preparación para FFT**
-
-El código copia los datos del ScrollBuffer al buffer de la FFT:
-
+**Línea 1:** Cálculo del tamaño del espectro
 ```cpp
-void FFT::SetData(double* data, int count) {
-    // Copiar voltajes del buffer temporal al array de la FFT
-    for (int i = 0; i < count; i++) {
-        samples[i] = data[i];  // samples es el input de FFTW3
+amplitudes_size = sample_count / 2 + 1;
+```
+- Si capturamos N=3840 muestras temporales, solo necesitamos calcular 3840/2 + 1 = 1921 frecuencias
+- **¿Por qué?** Por el teorema de Nyquist: solo podemos representar frecuencias hasta fs/2
+- El "+1" incluye la frecuencia 0 Hz (componente DC o promedio de la señal)
+
+**Línea 2:** Reserva de memoria alineada
+```cpp
+complex = (fftw_complex*)fftw_malloc(amplitudes_size * sizeof(fftw_complex));
+```
+- `fftw_malloc`: Reserva memoria con alineación especial (16 bytes) requerida por instrucciones SIMD
+- `fftw_complex`: Cada frecuencia se representa como número complejo (parte real + parte imaginaria)
+- **Tamaño:** 1921 × 16 bytes = ~31 KB de memoria
+
+**Línea 3:** Creación del plan de ejecución
+```cpp
+p = fftw_plan_dft_r2c_1d(sample_count, samples.data(), complex, FFTW_ESTIMATE);
+```
+- `dft`: Discrete Fourier Transform (transformada discreta de Fourier)
+- `r2c`: Real to Complex (entrada real → salida compleja)
+- `1d`: Unidimensional (para señales de audio/voltaje; existe 2D para imágenes)
+- `FFTW_ESTIMATE`: Modo rápido que usa heurísticas en lugar de benchmarks
+- **Resultado:** Un "plan" optimizado que se guardará para reutilizar en cada análisis
+
+### 4.2 Proceso de Análisis FFT - Paso a Paso
+
+El análisis FFT transforma señales temporales (voltios medidos cada fracción de segundo) en espectros frecuenciales (qué frecuencias existen en la señal y con qué amplitud). Este proceso se realiza en 5 pasos secuenciales:
+
+#### **PASO 1: Adquisición y Almacenamiento de Muestras**
+
+El Arduino captura voltajes con su ADC a una tasa constante (3840 muestras por segundo). Estas muestras llegan al PC vía puerto serial y se almacenan en un buffer circular que funciona como una "ventana deslizante" de 1 segundo.
+
+**Funcionamiento del buffer circular:**
+
+El sistema mantiene siempre 3840 muestras disponibles (exactamente 1 segundo de señal). Cuando llega una nueva muestra, entra por un extremo y desaloja la más antigua por el otro, como una cinta transportadora.
+
+```
+Ventana de 1 segundo (3840 muestras):
+┌────────────────────────────────────────────┐
+│  más antiguas  →  →  →  →  más recientes  │
+└────────────────────────────────────────────┘
+     ↑                                    ↑
+  se elimina                         nueva entra
+```
+
+**Ejemplo con valores reales:**
+```
+Tiempo:    0.000ms → 0.260ms → 0.520ms → ... → 999.740ms
+Voltaje:   1.23V     1.45V      1.67V     ...    0.98V
+Índice:    [0]       [1]        [2]       ...    [3839]
+```
+
+**Código de almacenamiento:**
+```cpp
+void SerialWorker() {
+    while (lectura_activa) {
+        uint8_t valor_adc = serial.read();  // Leer 1 byte desde Arduino
+        double voltaje = TransformarADC_a_Voltaje(valor_adc);  
+        scrollY->push(voltaje);  // Agregar al buffer circular
     }
-    samples_size = count;  // Guardar N (típicamente 3840)
 }
 ```
 
-**¿Por qué copiar?** Porque FFTW3 modifica el buffer de entrada durante el cálculo.
+#### **PASO 2: Preparación de Datos para FFT**
 
-**PASO 3: Ejecución de la FFT**
+Antes de calcular la FFT, copiamos los datos del buffer circular al array de entrada de FFTW3. Esta copia es necesaria porque FFTW3 necesita un array continuo en memoria y puede modificar los datos durante el cálculo.
+
+```cpp
+void FFT::SetData(const double* data, uint32_t count) {
+    // Copiar datos del buffer temporal al array de la FFT
+    std::copy(data, data + count, samples.begin());
+    
+    // Si hay menos de N muestras, rellenar con ceros (zero-padding)
+    if (count < samples_size) {
+        std::fill(samples.begin() + count, samples.end(), 0);
+    }
+}
+```
+
+**¿Qué hace esta función?**
+
+- Toma las 3840 muestras más recientes del buffer circular
+- Las copia al array `samples[]` que usa FFTW3
+- Si faltaran muestras (poco común), rellena con ceros
+
+#### **PASO 3: Ejecución de la Transformada de Fourier**
+
+Este es el corazón del análisis. FFTW3 toma las 3840 muestras temporales y calcula el espectro de frecuencias.
 
 ```cpp
 void FFT::Compute() {
-    // Ejecutar el plan pre-calculado de FFTW3
-    fftw_execute(p);
-    
-    // En este punto:
-    // - samples[] contiene las 3840 muestras temporales (input)
-    // - complex[] contiene 1921 coeficientes complejos (output)
-    //   (N/2 + 1 = 3840/2 + 1 = 1921 frecuencias positivas)
+    // Ejecutar la transformada de Fourier
+    fftw_execute(p);  // p es el "plan" creado en el constructor
 }
 ```
 
-**¿Qué hace fftw_execute(p) internamente?**
+**¿Qué sucede internamente en `fftw_execute(p)`?**
 
-1. Aplica la fórmula DFT a cada frecuencia k (de 0 a 1920):
-   ```
-   complex[k] = Σ(samples[n] × e^(-j2πkn/N)) para n=0 hasta 3839
-   ```
+FFTW3 calcula para cada frecuencia k (de 0 a 1920 Hz) cuánta energía hay en la señal a esa frecuencia específica. Matemáticamente, aplica esta fórmula para cada k:
 
-2. Usa optimizaciones FFT (divide y conquista)
+$$X[k] = \sum_{n=0}^{3839} x[n] \cdot e^{-j2\pi kn/3840}$$
 
-3. Aprovecha simetría de Hermite (señal real → espectro simétrico)
+Donde:
+- x[n] = muestra temporal n (el voltaje en el instante n)
+- X[k] = coeficiente complejo de la frecuencia k
+- j = unidad imaginaria (√-1)
 
-**Resultado**: Array `complex[]` con 1921 números complejos, cada uno representando una frecuencia.
+**Resultado:** Un array `complex[]` con 1921 números complejos. Cada número tiene:
+- **Parte real**: Cuánto de la frecuencia k está "en fase" con la señal
+- **Parte imaginaria**: Cuánto de la frecuencia k está "desfasada 90°"
 
-**PASO 4: Conversión a magnitudes (amplitudes)**
+#### **PASO 4: Conversión a Magnitudes (Amplitudes)**
 
-Los coeficientes FFT son números complejos. Necesitamos convertirlos a amplitudes (magnitudes):
+Los números complejos son difíciles de interpretar directamente. Lo que nos interesa es la **amplitud** (qué tan fuerte es cada frecuencia), independientemente de su fase.
+
+Para calcular la amplitud desde un número complejo, usamos el teorema de Pitágoras:
+
+$$\text{Amplitud}[k] = \sqrt{\text{real}^2 + \text{imag}^2}$$
+
+**Código de conversión:**
 
 ```cpp
-for (int i = 0; i < amplitudes_size; i++) {
-    // Extraer parte real e imaginaria
-    double real = complex[i][0];
-    double imag = complex[i][1];
+void FFT::Compute() {
+    fftw_execute(p);  // Ya ejecutada en paso 3
     
-    // Calcular magnitud (teorema de Pitágoras)
-    double magnitud = sqrt(real*real + imag*imag);
-    
-    // Normalizar por N para obtener amplitud en Voltios
-    amplitudes[i] = magnitud / samples_size;
+    // Convertir números complejos a magnitudes
+    for (int k = 0; k < amplitudes_size; k++) {
+        double parte_real = complex[k][0];
+        double parte_imag = complex[k][1];
+        
+        // Calcular magnitud (hipotenusa del triángulo)
+        double magnitud = sqrt(parte_real * parte_real + parte_imag * parte_imag);
+        
+        // Normalizar dividiendo por N para obtener amplitud en voltios
+        amplitudes[k] = magnitud / samples_size;
+    }
 }
 ```
 
-**¿Por qué dividir por N?** La FFT suma todos los términos, necesitamos el promedio.
+**¿Por qué dividir por samples_size (N=3840)?**
 
-**Interpretación**:
+La FFT suma todas las contribuciones de cada muestra. Si la señal es constante 1V, la suma sería 3840V. Dividiendo entre 3840 obtenemos el promedio verdadero: 1V.
+
+**Interpretación del array resultante:**
+
 ```
-amplitudes[0] = Componente DC (offset promedio)
-amplitudes[1] = Amplitud a 1 Hz
-amplitudes[2] = Amplitud a 2 Hz
+amplitudes[0]   = Componente DC (promedio de la señal)      → 0 Hz
+amplitudes[1]   = Amplitud a 1 Hz (un ciclo por segundo)    → 1 Hz
+amplitudes[2]   = Amplitud a 2 Hz                           → 2 Hz
 ...
-amplitudes[k] = Amplitud a k Hz
+amplitudes[440] = Amplitud a 440 Hz (nota La musical)       → 440 Hz
+...
+amplitudes[1920] = Amplitud a 1920 Hz (frecuencia de Nyquist) → 1920 Hz
 ```
 
-**PASO 5: Detección del pico dominante**
+#### **PASO 5: Detección de Frecuencia Dominante**
 
-```cpp
-// Buscar el índice con mayor amplitud (ignorando DC en [0])
-int max_index = 1;
-double max_amplitude = amplitudes[1];
+Una vez calculadas todas las amplitudes, buscamos cuál frecuencia tiene la mayor amplitud (excluyendo la componente DC).
 
-for (int i = 2; i < amplitudes_size; i++) {
-    if (amplitudes[i] > max_amplitude) {
-        max_amplitude = amplitudes[i];
-        max_index = i;
-    }
-}
-
-n_frequency = max_index;  // Guardar índice del pico
-```
-
-**Convertir índice a frecuencia real**:
-```cpp
-double Frequency() {
-    return n_frequency * sampling_frequency / samples_size;
-    // Ejemplo: 440 * 3840 / 3840 = 440 Hz
-}
-```
-
-**Ejemplo completo**:
-```
-Entrada: Tono puro de 440 Hz (nota La)
-↓
-ScrollBuffer: 3840 muestras @ 3840 Hz
-↓
-FFT: Calcula 1921 frecuencias (0 a 1920 Hz)
-↓
-Resultado:
-  amplitudes[0] = 0.002 V   (DC, casi cero)
-  amplitudes[440] = 0.950 V (¡PICO! Frecuencia dominante)
-  amplitudes[880] = 0.003 V (2ª armónica, muy débil)
-  ... resto ≈ 0 V (ruido)
-↓
-Detección: Frecuencia dominante = 440 Hz, Amplitud = 0.950 V
-```
-
-**Algoritmo de cálculo** (ver FFT.cpp para implementación completa):
 ```cpp
 void FFT::Compute() {
-    fftw_execute(p);  // Ejecutar FFT
+    // ... (pasos anteriores)
     
-    // Convertir complejos a magnitudes
-    for (int i = 0; i < amplitudes_size; i++) {
-        amplitudes[i] = sqrt(complex[i][0]*complex[i][0] + 
-                            complex[i][1]*complex[i][1]) / amplitudes_size;
+    // Guardar componente DC
+    offset = amplitudes[0];
+    
+    // Buscar la frecuencia con máxima amplitud (empezando desde k=1 para ignorar DC)
+    n_frequency = 1;
+    double amplitud_maxima = amplitudes[1];
+    
+    for (int k = 2; k < amplitudes_size; k++) {
+        if (amplitudes[k] > amplitud_maxima) {
+            amplitud_maxima = amplitudes[k];
+            n_frequency = k;  // Guardar índice del pico
+        }
     }
-    
-    offset = amplitudes[0];  // DC
-    // Buscar frecuencia dominante...
+}
+```
+
+**Conversión de índice a frecuencia en Hz:**
+
+El índice k corresponde a una frecuencia específica:
+
+$$f = k \cdot \frac{f_s}{N} = k \cdot \frac{3840}{3840} = k \text{ Hz}$$
+
+En nuestro caso particular, el índice coincide con la frecuencia en Hz porque fs = N = 3840.
+
+**Ejemplo completo con señal sinusoidal de 440 Hz:**
+
+```
+Entrada: Tono puro 440 Hz, amplitud 1.0V
+         ┌─┐     ┌─┐     ┌─┐
+    1V  ─┤ └─────┘ └─────┘ └──
+         └───────────────────────
+    0V   
+
+FFT calcula espectro:
+    Amplitud
+    │
+    │             █  ← Pico en k=440
+ 1.0V│            ███
+    │           █████
+ 0.5V│          ███████
+    │      ░░░░███████░░░░
+    └─────┴─────┴─────┴─────┴─────> Frecuencia (Hz)
+          0    220   440   660   880
+
+Resultado detectado:
+  - Frecuencia dominante: 440 Hz
+  - Amplitud: 0.98V (cercano al teórico 1.0V)
+  - Offset DC: 0.00V (señal centrada en cero)
+```
+
+**Resumen del flujo completo:**
+
+```
+Muestras temporales (3840 valores de voltaje)
+            ↓
+   [Paso 1] Almacenar en buffer circular
+            ↓
+   [Paso 2] Copiar a array samples[]
+            ↓
+   [Paso 3] fftw_execute() → array complex[]
+            ↓
+   [Paso 4] Calcular magnitudes → array amplitudes[]
+            ↓
+   [Paso 5] Buscar pico máximo → frecuencia dominante
+            ↓
+Resultado: Espectro de frecuencias listo para visualizar
+```
+
+### 4.3 Detección de Frecuencia Dominante
+
+Una vez calculado el espectro completo de frecuencias, el sistema identifica automáticamente cuál es la frecuencia principal (dominante) en la señal. Esta es típicamente la frecuencia fundamental de la señal que estamos midiendo.
+
+**Proceso de detección:**
+
+El algoritmo busca el bin con mayor amplitud en todo el espectro, excluyendo la componente DC (frecuencia 0 Hz):
+
+```cpp
+// Código simplificado de detección
+int indice_pico = 1;
+double amplitud_maxima = amplitudes[1];
+
+for (int k = 1; k < amplitudes_size; k++) {
+    if (amplitudes[k] > amplitud_maxima) {
+        amplitud_maxima = amplitudes[k];
+        indice_pico = k;
+    }
 }
 
-double Frequency() { return n_frequency * sampling_frequency / samples_size; }
+// Convertir índice a frecuencia real
+frecuencia_dominante = indice_pico * fs / N;
 ```
 
-### 4.3 Estado Actual: Detección de Frecuencia Dominante
+**Explicación del proceso:**
 
-**Funcionalidad implementada**:
-- ✅ Cálculo de espectro completo de frecuencias
-- ✅ Detección automática de frecuencia dominante
-- ✅ Cálculo de offset DC
-- ✅ Visualización en escala logarítmica con ImPlot
+1. **Iniciar búsqueda en k=1**: Se ignora k=0 porque corresponde a la componente DC (promedio de la señal), no a una frecuencia oscilante.
 
-**Visualización del espectro**:
-```cpp
-ImPlot::BeginPlot("Espectro");
-ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);  // Escala logarítmica
-fft->Plot(sampling_rate);  // Dibuja espectro de frecuencias
-ImPlot::EndPlot();
+2. **Recorrer todo el espectro**: Se compara cada bin con el máximo actual encontrado.
 
-// Mostrar datos numéricos
-ImGui::Text("Frecuencia: %s\tOffset DC: %s", 
-            Format(fft->Frequency()), Format(fft->Offset()));
+3. **Guardar el pico**: Cuando se encuentra una amplitud mayor, se actualiza tanto la amplitud como el índice.
+
+4. **Convertir a Hz**: El índice k se convierte a frecuencia multiplicando por la resolución frecuencial (fs/N).
+
+**Ejemplo práctico:**
+
+Supongamos que estamos midiendo una señal de 440 Hz (nota La musical):
+
+```
+Espectro calculado:
+  amplitudes[0]   = 0.001 V  (DC, casi cero)
+  amplitudes[1]   = 0.002 V
+  amplitudes[2]   = 0.003 V
+  ...
+  amplitudes[439] = 0.025 V
+  amplitudes[440] = 0.950 V  ← ¡MÁXIMO!
+  amplitudes[441] = 0.018 V
+  ...
+  amplitudes[1920] = 0.001 V
+
+Resultado:
+  indice_pico = 440
+  frecuencia_dominante = 440 * 3840 / 3840 = 440 Hz
+  amplitud = 0.950 V
 ```
 
-### 4.4 Implementación: Detección de 3 Primeras Armónicas
+### 4.4 Detección de Armónicas
 
-**Estado**: ✅ **IMPLEMENTADO**
+**Estado:** ✅ **IMPLEMENTADO** 
 
-**Descripción**: El sistema detecta automáticamente las 3 primeras armónicas de la señal de entrada, mostrando su frecuencia y amplitud en una tabla estructurada. Adicionalmente, calcula la Distorsión Armónica Total (THD) como métrica de calidad de señal.
+El sistema detecta automáticamente las 5 primeras armónicas de la señal de entrada. Las armónicas son frecuencias que son múltiplos enteros de la frecuencia fundamental.
 
-**Estructura de datos**:
+**¿Qué son las armónicas?**
+
+Las armónicas son componentes frecuenciales que aparecen naturalmente en señales no sinusoidales. Si la frecuencia fundamental es f₀, las armónicas aparecen en:
+- 1ª armónica (fundamental): f₀
+- 2ª armónica: 2 × f₀  
+- 3ª armónica: 3 × f₀
+- 4ª armónica: 4 × f₀
+- 5ª armónica: 5 × f₀
+
+**Ejemplo:** Si f₀ = 100 Hz, las armónicas están en 100, 200, 300, 400 y 500 Hz.
+
+**Estructura de datos:**
+
+Cada armónica detectada contiene tres datos:
 
 ```cpp
-// Definida en FFT.h
 struct Harmonic {
     double frequency;   // Frecuencia en Hz
-    double amplitude;   // Amplitud en Voltios
-    int bin_index;      // Índice del bin en el espectro FFT
+    double amplitude;   // Amplitud en Voltios  
+    int bin_index;      // Posición en el espectro
 };
 ```
 
-**Algoritmo de detección** (ver FFT.cpp para implementación completa con comentarios):
+**Algoritmo de detección - Explicación paso a paso:**
 
-1. **Identificación de fundamental**: Usa frecuencia dominante de `Compute()`
-2. **Búsqueda de armónicas**: Para n = 1, 2, 3:
-   - Calcula `target_freq = fundamental × n`
-   - Convierte a bin: `target_bin = round(target_freq × N / fs)`
-3. **Detección de pico**: Busca máximo en ventana ±3 bins
-4. **Resultado**: Vector con `{frequency, amplitude, bin_index}`
-
-**Explicación paso a paso del algoritmo de detección de armónicas**:
-
-**Ejemplo práctico**: Señal con fundamental a 440 Hz
+El algoritmo utiliza la frecuencia dominante como referencia y busca picos en las posiciones donde se esperan las armónicas.
 
 **PASO 1: Obtener frecuencia fundamental**
 
-Después de ejecutar `Compute()`, el sistema ya detectó la frecuencia dominante:
+Después de ejecutar la FFT, ya tenemos detectada la frecuencia dominante. Esta será nuestra frecuencia fundamental f₀.
+
 ```
-Frecuencia fundamental (f₀) = 440 Hz  // Del pico máximo en el espectro
+Ejemplo: f₀ = 440 Hz (detectada como pico máximo)
 ```
 
-**PASO 2: Calcular frecuencias esperadas de armónicas**
+**PASO 2: Calcular frecuencias esperadas**
 
-Las armónicas son múltiplos enteros de la fundamental:
+Para cada armónica n (de 1 a 5), calculamos dónde deberíamos encontrar el pico:
+
 ```
-1ª armónica (fundamental): f₁ = 1 × 440 = 440 Hz
-2ª armónica:               f₂ = 2 × 440 = 880 Hz
-3ª armónica:               f₃ = 3 × 440 = 1320 Hz
+1ª armónica: f₁ = 1 × 440 = 440 Hz   (fundamental)
+2ª armónica: f₂ = 2 × 440 = 880 Hz
+3ª armónica: f₃ = 3 × 440 = 1320 Hz
+4ª armónica: f₄ = 4 × 440 = 1760 Hz
+5ª armónica: f₅ = 5 × 440 = 2200 Hz  (si no excede Nyquist)
 ```
 
-**PASO 3: Convertir frecuencias a índices del array (bins)**
+**PASO 3: Convertir frecuencias a índices (bins)**
 
-La FFT produce un array donde cada posición k corresponde a una frecuencia:
+Cada frecuencia esperada se convierte a un índice del array de amplitudes:
+
 ```
-Índice k = frecuencia × N / fs
+bin_esperado = round(frecuencia × N / fs)
 
 Para f₂ = 880 Hz:
-  bin₂ = 880 × 3840 / 3840 = 880
-  
-¡El índice coincide con la frecuencia cuando N = fs!
+  bin₂ = round(880 × 3840 / 3840) = 880
 ```
 
-**PASO 4: Buscar pico local en ventana ±3 bins**
+**PASO 4: Búsqueda con tolerancia (±3 bins)**
 
-¿Por qué ±3 bins? Por dos razones:
+En lugar de buscar exactamente en el bin calculado, el algoritmo busca el pico máximo en una ventana de ±3 bins alrededor. Esto compensa:
 
-1. **Resolución frecuencial**: Δf = fs/N = 3840/3840 = 1 Hz
-   - Cada bin representa 1 Hz
-   - Una ventana de ±3 bins = ±3 Hz permite tolerancia
-
-2. **Efecto de ventana**: La FFT de señales de duración finita "ensancha" los picos
+- **Resolución finita**: Si la frecuencia real es 880.4 Hz pero la resolución es 1 Hz/bin, el pico puede estar ligeramente desplazado.
+- **Spectral leakage**: La energía puede distribuirse en bins vecinos.
 
 ```cpp
-// Código simplificado
-int target_bin = 880;  // Esperamos 2ª armónica aquí
+// Código simplificado de búsqueda con tolerancia
+int bin_objetivo = 880;  // Para 2ª armónica
 
-int best_bin = target_bin;
-double max_amplitude = amplitudes[target_bin];
+int mejor_bin = bin_objetivo;
+double mejor_amplitud = amplitudes[bin_objetivo];
 
-// Buscar en [877, 878, 879, 880, 881, 882, 883]
-for (int bin = target_bin - 3; bin <= target_bin + 3; bin++) {
-    if (amplitudes[bin] > max_amplitude) {
-        max_amplitude = amplitudes[bin];
-        best_bin = bin;
+// Buscar en ventana [877, 878, 879, 880, 881, 882, 883]
+for (int bin = bin_objetivo - 3; bin <= bin_objetivo + 3; bin++) {
+    if (amplitudes[bin] > mejor_amplitud) {
+        mejor_amplitud = amplitudes[bin];
+        mejor_bin = bin;
     }
 }
 
-// Resultado:
-harmonic.frequency = best_bin * fs / N;  // 880 Hz (o 881 Hz si hubo ligero error)
-harmonic.amplitude = max_amplitude;       // 0.420 V
+// Guardar resultado
+armonica.frequency = mejor_bin * fs / N;  // Frecuencia exacta encontrada
+armonica.amplitude = mejor_amplitud;       // Amplitud del pico
+armonica.bin_index = mejor_bin;            // Posición en el espectro
 ```
 
-**PASO 5: Calcular THD (Distorsión Armónica Total)**
-
-Una vez detectadas todas las armónicas:
+**Visualización del proceso de búsqueda:**
 
 ```
-A₁ = 0.950 V  (fundamental)
-A₂ = 0.420 V  (2ª armónica)
-A₃ = 0.180 V  (3ª armónica)
+Buscando 2ª armónica (esperada en 880 Hz):
 
-THD = √(A₂² + A₃²) / A₁ × 100%
-    = √(0.420² + 0.180²) / 0.950 × 100%
-    = √(0.1764 + 0.0324) / 0.950 × 100%
-    = 0.4572 / 0.950 × 100%
-    = 48.1%
+  Amplitud
+    │
+    │        877 878 879 880 881 882 883
+    │         ↓   ↓   ↓   ↓   ↓   ↓   ↓
+ 0.4│         █   █   █   █   █   █   █
+    │        ░░░░░░░░░░░░███░░░░░░░░░░░   ← Pico real en 881
+ 0.3│                  ███████
+    │                ███████████
+ 0.2│              █████████████████
+    │          ░░███████████████████░░
+    └──────────────────────────────────> Frecuencia
+                    Ventana de búsqueda
+
+Resultado: Armónica encontrada en 881 Hz con amplitud 0.42V
 ```
 
-**Interpretación del THD**:
-- THD = 0%: Señal perfectamente senoidal (imposible en práctica)
-- THD < 1%: Señal muy pura (generadores de laboratorio)
-- THD = 48%: Señal con distorsión significativa (onda cuadrada tiene ~48% THD teórico)
+**PASO 5: Límite de Nyquist**
 
-**Flujo completo visualizado**:
-```
-Señal temporal (3840 muestras)
-       ↓
-   FFT (FFTW3)
-       ↓
-Espectro (1921 frecuencias)
-       ↓
-  Detectar pico máximo → f₀ = 440 Hz
-       ↓
-  Para n = 1, 2, 3:
-    - Calcular fₙ = n × f₀
-    - Buscar pico cerca de fₙ
-    - Guardar {frecuencia, amplitud}
-       ↓
-  Calcular THD
-       ↓
-Mostrar tabla:
-  1ª: 440.2 Hz   0.950 V
-  2ª: 880.5 Hz   0.420 V
-  3ª: 1320.1 Hz  0.180 V
-  THD: 48.1%
-```
+Si una armónica esperada excede la frecuencia de Nyquist (fs/2 = 1920 Hz), el algoritmo detiene la búsqueda:
 
 ```cpp
-std::vector<Harmonic> FFT::FindHarmonics(double fs, int count) {
-    double f0 = n_frequency * fs / samples_size;
-    
-    for (int n = 1; n <= count; n++) {
-        int target_bin = round((f0 * n) * samples_size / fs);
-        // Buscar pico local en ±3 bins...
-        // Almacenar resultado en detected_harmonics
-    }
-    return detected_harmonics;
+if (bin_objetivo >= amplitudes_size) {
+    break;  // Armónica fuera del rango representable
 }
 ```
-**Visualización** (tabla con armónicas y THD):
 
-```cpp
-// Mostrar tabla de armónicas
-auto harmonics = fft->FindHarmonics(settings->sampling_rate, 3);
+**Ejemplo:** Con fs=3840 Hz, solo podemos detectar hasta 1920 Hz. Si f₀=500 Hz:
+- 1ª armónica: 500 Hz ✓
+- 2ª armónica: 1000 Hz ✓  
+- 3ª armónica: 1500 Hz ✓
+- 4ª armónica: 2000 Hz ✗ (excede Nyquist)
+- 5ª armónica: no se calcula
 
-for (int i = 0; i < harmonics.size(); i++) {
-    ImGui::Text("%dª: %s  %s", i+1, 
-               FormatFreq(harmonics[i].frequency),
-               FormatVolt(harmonics[i].amplitude));
-}
+**PASO 6: Cálculo de THD (Distorsión Armónica Total)**
 
-// Cálculo de THD
-double thd = sqrt(sum_of_squares(harmonics[1..n])) / harmonics[0] * 100;
-ImGui::Text("THD: %.2f%%", thd);
+Una vez detectadas todas las armónicas, se calcula el THD como medida de qué tan "pura" es la señal:
+
+$$\text{THD} = \frac{\sqrt{A_2^2 + A_3^2 + A_4^2 + A_5^2}}{A_1} \times 100\%$$
+
+Donde:
+- A₁ = amplitud de la fundamental
+- A₂, A₃, A₄, A₅ = amplitudes de las armónicas superiores
+
+**Ejemplo numérico completo:**
+
+Señal medida: onda cuadrada de 440 Hz
+
+```
+Armónicas detectadas:
+  1ª: 440.1 Hz → 0.950 V  (fundamental)
+  2ª: 880.3 Hz → 0.012 V  (muy débil, casi cero)
+  3ª: 1320.2 Hz → 0.315 V (33% de la fundamental, típico en onda cuadrada)
+  4ª: 1760.1 Hz → 0.008 V (muy débil)
+  5ª: 2200.4 Hz → Fuera de rango (>1920 Hz)
+
+Cálculo de THD:
+  THD = √(0.012² + 0.315² + 0.008²) / 0.950 × 100%
+      = √(0.000144 + 0.099225 + 0.000064) / 0.950 × 100%
+      = 0.3153 / 0.950 × 100%
+      = 33.2%
 ```
 
-**Ejemplo de salida del sistema** (señal senoidal de 440 Hz con armónicos):
+**Visualización en la interfaz:**
+
+El sistema muestra una tabla estructurada con los resultados:
+
 ```
 ARMÓNICAS DETECTADAS:
-──────────────────────
-  1ª: 440.2 Hz    0.950 V    (Fundamental)
-  2ª: 880.5 Hz    0.420 V    (2×f₀)
-  3ª: 1320.1 Hz   0.180 V    (3×f₀)
-
-Distorsión Armónica Total (THD): 48.32%
+═══════════════════════════════════════
+Armónica    Frecuencia      Amplitud
+───────────────────────────────────────
+1ª          440.1 Hz        0.950 V
+2ª          880.3 Hz        0.012 V
+3ª          1320.2 Hz       0.315 V
+4ª          1760.1 Hz       0.008 V
+5ª          —               —
+═══════════════════════════════════════
+Distorsión Armónica Total (THD): 33.2%
 ```
 
-### 4.5 Análisis de Rendimiento
+**Interpretación del THD:**
 
-**Tiempo de ejecución FFT** (1024 muestras):
-- Implementación DFT naive: ~5.2 ms
-- FFTW3 optimizada: ~0.08 ms
-- **Speedup: 65×**
+- **THD < 1%**: Señal muy pura (casi senoidal)
+- **THD ≈ 5-10%**: Señal con ligera distorsión
+- **THD ≈ 30-50%**: Señal con distorsión significativa (típico en ondas cuadradas/triangulares)
+- **THD > 50%**: Señal muy distorsionada o ruidosa
 
-**Frecuencia de actualización**:
+###4.5 Análisis de Rendimiento
+
+**Velocidad de cálculo FFT:**
+
+Comparación entre implementación naive (DFT) y FFTW3 optimizada:
+
+| Método | Complejidad | Operaciones (N=1024) | Tiempo | Uso CPU |
+|--------|-------------|----------------------|--------|---------|
+| DFT naive | O(N²) | ~1,000,000 | ~5.2 ms | —
+| **FFTW3** | **O(N log N)** | **~10,000** | **~0.08 ms** | **< 1%** |
+
+**Speedup:** 65× más rápido
+
+**Explicación:**
+
+- **DFT naive**: Calcula cada frecuencia independientemente, requiriendo N operaciones por cada una de las N frecuencias: N² operaciones totales.
+  
+- **FFT (algoritmo de Cooley-Tukey)**: Divide el problema recursivamente, reduciendo a N log₂(N) operaciones. Para N=1024: 1024 × log₂(1024) = 1024 × 10 = 10,240 operaciones.
+
+**Impacto en el sistema:**
+
+Con actualización visual a 10 Hz (cada 100 ms), la FFT consume solo:
 ```
-Ventana de análisis: 1 segundo de datos (3840 muestras)
-Frecuencia de actualización visual: 10 Hz (cada 100 ms)
-CPU utilizada por FFT: <1%
+Tiempo FFT por actualización: 0.08 ms
+Período disponible: 100 ms
+Utilización: 0.08 / 100 = 0.08% de CPU
 ```
+
+Esto deja el 99.92% del tiempo de CPU disponible para interfaz gráfica, filtrado y comunicación serial.
 
 ---
 
@@ -1423,49 +1559,88 @@ Los filtros Butterworth diseñados correctamente mediante transformación biline
 
 ### 6.1 Biblioteca IIR1
 
-El sistema utiliza la biblioteca **IIR1 de Bernd Porr**, que implementa filtros IIR comunes (Butterworth, Chebyshev, Bessel).
+El sistema utiliza la biblioteca **IIR1 de Bernd Porr**, una implementación eficiente de filtros IIR (Infinite Impulse Response) digitales. Esta biblioteca proporciona filtros clásicos como Butterworth, Chebyshev y Bessel.
 
-**Declaración** (biblioteca IIR1 de Bernd Porr):
+**¿Qué es un filtro IIR?**
+
+Los filtros IIR (Respuesta Impulsional Infinita) son filtros digitales que utilizan retroalimentación: la salida actual depende no solo de las entradas actuales y pasadas, sino también de las salidas pasadas. Esto los hace muy eficientes computacionalmente, requiriendo menos operaciones que filtros FIR equivalentes.
+
+**Filtros implementados en el proyecto:**
+
+Se han configurado dos filtros Butterworth de orden 8:
+
+1. **Filtro Pasa Bajos:** Deja pasar frecuencias bajas y atenúa frecuencias altas.
+2. **Filtro Pasa Altos:** Deja pasar frecuencias altas y atenúa frecuencias bajas.
+
+**Declaración en el código:**
+
 ```cpp
+// Filtros globales de orden 8
 Iir::Butterworth::LowPass<8> lowpass_filter;
 Iir::Butterworth::HighPass<8> highpass_filter;
 ```
 
+**¿Qué significa "orden 8"?**
+
+El orden de un filtro determina cuán "abrupta" es su respuesta frecuencial. Un filtro de orden 8 significa que:
+
+- Tiene 8 polos en su función de transferencia
+- Proporciona una atenuación de 48 dB/octava en la banda de rechazo  
+- Requiere almacenar 8 valores de entrada y 8 valores de salida anteriores
+- Es más selectivo que un filtro de orden 2, pero menos que uno de orden 16
+
 ### 6.2 Configuración de Filtros
 
-**Configuración**:
-```cpp
-void SetupFilter() {
-    if (selected_filter == LowPass)
-        lowpass_filter.setup(sampling_rate, cutoff_frequency);
-    else if (selected_filter == HighPass)
-        highpass_filter.setup(sampling_rate, cutoff_frequency);
-}
+Antes de usar un filtro, es necesario configurarlo con la frecuencia de muestreo y la frecuencia de corte deseada.
 
-void ResetFilters() {
-    lowpass_filter.reset();  // Limpiar estados internos
-    highpass_filter.reset();
-}
+**Frecuencia de corte:**
+
+La frecuencia de corte (fc) es el punto donde el filtro atenúa la señal en -3 dB (aproximadamente 70.7% de la amplitud original). 
+
+- **Pasa Bajos:** Frecuencias menores a fc pasan, mayores a fc se atenúan
+- **Pasa Altos:** Frecuencias mayores a fc pasan, menores a fc se atenúan
+
+**Método de configuración:**
+
+```cpp
+// Configurar filtro pasa bajos
+lowpass_filter.setup(frecuencia_muestreo, frecuencia_corte);
+
+// Ejemplo: fs=3840 Hz, fc=500 Hz
+lowpass_filter.setup(3840, 500);
+// Resultado: Deja pasar 0-500 Hz, atenúa 500-1920 Hz
 ```
+
+**¿Qué hace `setup()` internamente?**
+
+La función `setup()` calcula automáticamente los coeficientes del filtro digital mediante la transformación bilineal:
+
+1. Diseña un filtro analógico Butterworth con la frecuencia de corte especificada
+2. Aplica la transformación bilineal para convertirlo a digital
+3. Calcula los coeficientes de la ecuación en diferencias
+4. Almacena estos coeficientes para usar en cada muestra
+
+**Reseteo del filtro:**
+
+Cuando se cambia la configuración o se inicia una nueva captura, es importante limpiar los estados internos:
+
+```cpp
+lowpass_filter.reset();  // Limpia historial de entradas/salidas
+```
+
+Esto elimina los valores almacenados de muestras anteriores, evitando transitorios al procesar una nueva señal.
 
 ### 6.3 Aplicación en Tiempo Real
 
 **Pipeline de procesamiento**:
 
 ```
-ADC (3840 Hz) → Serial → PC
-                          ↓
-                    Transformación ADC→Voltaje
-                          ↓
-                   ┌──────────────┐
-                   │ Filtro IIR   │
-                   │ (muestra a   │
-                   │  muestra)    │
-                   └──────────────┘
-                          ↓
-                    Transformación Voltaje→DAC
-                          ↓
-                    Serial → DAC R2R (8 pines)
+ADC (3840 Hz) → Serial → PC → ┌──────────────┐ → Serial → DAC R2R (8 pines)
+                              │ Filtro IIR   │
+                              │ (muestra a   │
+                              │  muestra)    │
+                              └──────────────┘
+
 ```
 
 **Pipeline de procesamiento** (ver MainWindow.cpp para detalles completos):
@@ -1512,68 +1687,30 @@ uint8_t InverseTransformSample(double voltage) {
 
 ### 6.4 Visualización Dual
 
-**Visualización dual** (entrada y salida filtrada):
-```cpp
-void Draw() {
-    // Gráfico 1: Señal original
-    ImPlot::BeginPlot("Entrada");
-    ImPlot::PlotLine("", dataX, dataY, size);
-    ImPlot::EndPlot();
-    
-    // Gráfico 2: Señal filtrada
-    ImPlot::BeginPlot("Salida Filtrada");
-    ImPlot::PlotLine("", dataX, dataY_filtered, size);
-    ImPlot::EndPlot();
-}
-```
+La interfaz gráfica muestra simultáneamente dos gráficos temporales superpuestos verticalmente, ambos con el mismo eje de tiempo, lo que permite comparar visualmente el efecto del filtro.
 
-### 6.5 Controles de Usuario
+**Gráfico superior:** Señal de entrada (original del ADC)
+**Gráfico inferior:** Señal de salida (después del filtro)
 
-**Controles de usuario**:
-```cpp
-// Selector de filtro y frecuencia de corte
-ImGui::Combo("Tipo de Filtro", &selected_filter, 
-             "Ninguno\0Pasa Bajos\0Pasa Altos");
+Ambos gráficos comparten la misma escala temporal, facilitando la observación de:
+- El retardo introducido por el filtro (group delay)
+- La atenuación de frecuencias específicas
+- La forma de onda antes y después del procesamiento
 
-if (selected_filter != None) {
-    ImGui::SliderInt("Frecuencia de corte (Hz)", &cutoff_freq, 
-                     min_freq, max_freq);
-}
-```
+### 6.5 Controles de Configuración
 
-### 6.6 Filtro Pasabanda - Estado Actual
+El usuario puede controlar el filtrado mediante la interfaz, seleccionando:
 
-**Estado**: ❌ No implementado
+**1. Tipo de filtro:**
+- **Ninguno:** La señal pasa sin procesar (bypass)
+- **Pasa Bajos:** Atenúa frecuencias superiores a fc
+- **Pasa Altos:** Atenúa frecuencias inferiores a fc
 
-**Propuesta de implementación (cascada de filtros)**:
-```cpp
-// Declaración
-Iir::Butterworth::LowPass<4> bandpass_lowpass;
-Iir::Butterworth::HighPass<4> bandpass_highpass;
+**2. Frecuencia de corte (fc):** Ajustable dinámicamente en tiempo real, típicamente en el rango de 10 Hz hasta 1500 Hz.
 
-// Setup
-void SetupBandPass(double fs, double f_low, double f_high) {
-    bandpass_highpass.setup(fs, f_low);   // Corta frecuencias bajas
-    bandpass_lowpass.setup(fs, f_high);   // Corta frecuencias altas
-}
+Cuando se modifica cualquier parámetro, el filtro se reconfigura automáticamente llamando a `setup()` con los nuevos valores, y luego se ejecuta `reset()` para limpiar los estados internos y evitar transitorios al aplicar la nueva configuración.
 
-// Aplicación
-double ApplyBandPass(double input) {
-    double temp = bandpass_highpass.filter(input);
-    return bandpass_lowpass.filter(temp);
-}
-```
-
-**Ventajas de la cascada**:
-- Fácil de implementar con filtros existentes
-- Control independiente de frecuencias inferior y superior
-- Comportamiento predecible
-
-**Desventajas**:
-- Orden efectivo doble (2× latencia)
-- Respuesta no optimal en transición
-
-### 6.7 Análisis de Latencia
+### 6.6 Análisis de Latencia
 
 **Componentes de latencia total**:
 
@@ -1758,148 +1895,13 @@ Pérdida: 46.88 - 11.72 = 35.16 mV en términos de entrada
 - Reducción de 37% en ancho de banda
 - El rango efectivo (0.8V-3.8V) ya limita el uso del ADC al 60% de su capacidad
 
----
-
-## 8. RESULTADOS EXPERIMENTALES
-
-### 8.1 Pruebas de Caracterización
-
-#### 8.1.1 Prueba de Precisión
-
-**Metodología**:
-1. Generar señal DC estable con fuente de referencia
-2. Medir 1000 muestras
-3. Calcular desviación estándar
-
-**Resultados** (señal de entrada aplicada: 0V, equivalente a 2.3V en el ADC):
-```
-Voltaje de entrada aplicado: 0.000 V (calibrado)
-Voltaje en ADC esperado: 2.300 V
-Media medida (ADC): 2.298 V
-Media calculada (entrada): -0.008 V
-Desviación estándar: 43.2 mV (referida a entrada ±6V)
-Min (entrada): -0.092 V
-Max (entrada): +0.085 V
-Rango: 177 mV (3.8 LSB de entrada)
-```
-
-**Conclusión**: La precisión medida (±43 mV referida a entrada) es compatible con la resolución teórica (46.88 mV por LSB en la entrada).
-
-#### 8.1.2 Prueba de Exactitud
-
-**Metodología**:
-1. Aplicar voltajes conocidos (multímetro calibrado)
-2. Comparar con lecturas del sistema
-
-**Resultados** (voltajes de entrada en el rango -6V a +6V):
-
-| V_aplicado (entrada) | V_medido | Error_abs | Error_% |
-|----------------------|----------|-----------|---------|
-| -4.000 V | -3.954 V | +46 mV | +1.15% |
-| -2.000 V | -1.987 V | +13 mV | +0.65% |
-| 0.000 V | +0.008 V | +8 mV | — |
-| +2.000 V | +2.022 V | +22 mV | +1.1% |
-| +4.000 V | +3.961 V | -39 mV | -0.98% |
-
-**Exactitud promedio**: ±25.6 mV (±0.21% del span de 12V) - mejor que especificación teórica de ±49.2 mV
-
-### 8.2 Pruebas de FFT
-
-#### 8.2.1 Señal Senoidal Pura
-
-**Configuración**:
-- Generador de funciones → 440 Hz (nota La)
-- Amplitud: 1.0 Vpp
-- Offset: 2.5 V
-
-**Resultados FFT**:
-```
-Frecuencia detectada: 440.2 Hz (error: +0.05%)
-Amplitud fundamental: 0.498 V RMS (esperado: 0.500 V)
-2ª armónica (880 Hz): 0.003 V (THD: 0.6%)
-3ª armónica (1320 Hz): 0.001 V
-Offset DC: 2.502 V
-```
-
-**Conclusión**: Detección precisa de frecuencia con THD bajo.
-
-#### 8.2.2 Señal Cuadrada
-
-**Configuración**:
-- Frecuencia fundamental: 100 Hz
-- Amplitud: 2.0 Vpp
-- Duty cycle: 50%
-
-**Resultados FFT** (armónicas impares esperadas):
-```
-1ª armónica (100 Hz): 1.273 V (teórico: 4/π ≈ 1.273 V) ✓
-3ª armónica (300 Hz): 0.424 V (teórico: 1.273/3 ≈ 0.424 V) ✓
-5ª armónica (500 Hz): 0.255 V (teórico: 1.273/5 ≈ 0.255 V) ✓
-7ª armónica (700 Hz): 0.182 V (teórico: 1.273/7 ≈ 0.182 V) ✓
-```
-
-**Conclusión**: El sistema detecta correctamente la serie de Fourier de onda cuadrada.
-
-### 8.3 Pruebas de Filtros
-
-#### 8.3.1 Filtro Pasabajos
-
-**Configuración**:
-- Frecuencia de corte: 500 Hz
-- Orden: 8
-- Señal de entrada: chirp 10 Hz → 1500 Hz
-
-**Resultados**:
-
-| Frecuencia | Atenuación medida | Atenuación teórica |
-|------------|-------------------|--------------------|
-| 100 Hz | -0.1 dB | 0 dB |
-| 500 Hz | -3.0 dB | -3.01 dB |
-| 1000 Hz | -48.2 dB | -48.1 dB |
-| 1500 Hz | -72.5 dB | -72.2 dB |
-
-**Conclusión**: Respuesta medida coincide con modelo teórico.
-
-#### 8.3.2 Filtro Pasaaltos
-
-**Configuración**:
-- Frecuencia de corte: 1000 Hz
-- Orden: 8
-- Señal de entrada: chirp 10 Hz → 1500 Hz
-
-**Resultados**:
-
-| Frecuencia | Atenuación medida | Atenuación teórica |
-|------------|-------------------|--------------------|
-| 250 Hz | -72.8 dB | -72.2 dB |
-| 500 Hz | -48.3 dB | -48.1 dB |
-| 1000 Hz | -3.1 dB | -3.01 dB |
-| 1500 Hz | -0.2 dB | 0 dB |
-
-**Conclusión**: Comportamiento complementario al pasabajos, según esperado.
-
-### 8.4 Análisis de Latencia
-
-**Medición**:
-- Señal impulso → medir tiempo hasta respuesta en salida
-- Osciloscopio de 2 canales: CH1=entrada, CH2=salida
-
-**Resultados**:
-```
-Latencia ADC: ~110 μs
-Latencia serial ida: ~260 μs
-Latencia procesamiento: ~18 μs
-Latencia serial vuelta: ~265 μs
-Latencia DAC (R2R): ~1 μs (escritura atómica PORTA)
-
-Latencia total medida: 1.08 ms (concordante con cálculo teórico)
-```
+**Nota**: Para validar experimentalmente el sistema, consulte el documento [MEDICIONES_Y_PRUEBAS.md](MEDICIONES_Y_PRUEBAS.md), que contiene protocolos detallados de pruebas sugeridas, valores esperados y criterios de aceptación.
 
 ---
 
-## 9. CONCLUSIONES
+## 8. CONCLUSIONES
 
-### 9.1 Cumplimiento de Objetivos
+### 8.1 Cumplimiento de Objetivos
 
 **Consigna 2 - Caracterización metrológica**: ✅ **CUMPLIDA**
 - Precisión: 11.72 mV por LSB en rango ADC (46.88 mV referida a entrada ±6V)
@@ -1911,16 +1913,15 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 - Análisis FFT implementado con FFTW3
 - Detección de frecuencia dominante y offset DC
 - Visualización espectral en escala logarítmica
-- **Detección de 3 primeras armónicas**: ✅ **IMPLEMENTADO** (incluye cálculo de THD)
+- **Detección de 5 primeras armónicas**: ✅ **IMPLEMENTADO** (incluye cálculo de THD)
 
 **Consigna 4 - Filtros digitales**: ✅ **CUMPLIDA**
 - Filtro pasabajos Butterworth orden 8 implementado
 - Filtro pasaaltos Butterworth orden 8 implementado
 - Frecuencia de corte ajustable por usuario
 - Visualización simultánea de entrada y salida
-- **Filtro pasabanda**: Propuesta documentada (no implementada)
 
-### 9.2 Logros Principales
+### 8.2 Logros Principales
 
 1. **Sistema funcional end-to-end**: Desde adquisición analógica hasta visualización digital
 
@@ -1932,9 +1933,9 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 
 5. **Validación experimental**: Mediciones coinciden con modelos teóricos
 
-6. **Detección de armónicas implementada**: Sistema completo de análisis con 3 armónicas y cálculo de THD
+6. **Detección de armónicas implementada**: Sistema completo de análisis con 5 armónicas y cálculo de THD
 
-### 9.3 Limitaciones Identificadas
+### 8.3 Limitaciones Identificadas
 
 1. **Uso de 8 bits vs 10 bits nativos del ADC**
    - **Descripción**: El ADC convierte a 10 bits (2.93 mV/LSB) pero se utilizan solo 8 bits (11.72 mV/LSB) mediante ADLAR
@@ -1944,7 +1945,6 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
    - **Mitigación posible**: Usar baudrate 115200 para transmitir 10 bits (requiere 2 bytes/muestra)
 
 2. **Filtro pasabanda no implementado**: Solo lowpass y highpass disponibles
-   - **Mejora propuesta**: Cascada de filtros documentada en Sección 6.6
 
 3. **Rango efectivo del ADC reducido**: Solo 60% del rango del ADC (0.8V-3.8V de 5V)
    - **Causa**: Acondicionamiento conservador del LM324 para evitar saturación
@@ -1954,7 +1954,7 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 4. **Latencia fija**: ~1 ms no configurable
    - **Aceptable**: Imperceptible para aplicaciones de audio (<10 ms)
 
-### 9.4 Aprendizajes Clave
+### 8.4 Aprendizajes Clave
 
 **Teóricos**:
 - Aplicación práctica del Teorema de Nyquist
@@ -1970,26 +1970,26 @@ Latencia total medida: 1.08 ms (concordante con cálculo teórico)
 - Análisis de propagación de errores en cadenas de medición (ADC → acondicionador → entrada)
 - Balance entre complejidad del circuito analógico y procesamiento digital
 
-### 9.5 Mejoras Futuras
+### 8.5 Mejoras Futuras
 
 **Prioridad Alta** (1-2 horas implementación):
-1. Filtro pasabanda mediante cascada
-2. Detección de más armónicas (5, 7 u orden configurable por usuario)
+1. Filtro pasabanda mediante cascada de filtros pasa bajos y pasa altos
+2. Ventanas de FFT configurables (Hamming, Blackman, Hann) para reducir leakage espectral
 
 **Prioridad Media** (2-4 horas):
-3. Ventanas de FFT configurables (Hamming, Blackman, Hann)
-4. Exportación de datos a CSV (señal temporal + espectro + armónicas)
-5. Marcadores visuales de armónicas en gráfico de espectro
+3. Exportación de datos a CSV (señal temporal + espectro + armónicas)
+4. Marcadores visuales de armónicas en gráfico de espectro
+5. Orden de filtro configurable por usuario (2, 4, 8, 16)
 
 **Prioridad Baja** (mejoras avanzadas):
-6. Filtros FIR (fase lineal)
-7. Análisis de correlación cruzada
-8. Waterfall plot (espectrograma)
+6. Filtros FIR (fase lineal, sin distorsión de fase)
+7. Análisis de correlación cruzada entre canales
+8. Waterfall plot (espectrograma 3D tiempo-frecuencia)
 9. Cálculo de SINAD, SFDR además de THD
 
 ---
 
-## 10. REFERENCIAS
+## 9. REFERENCIAS
 
 ### Bibliografía
 
