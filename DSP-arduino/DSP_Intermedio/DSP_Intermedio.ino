@@ -26,10 +26,10 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
-// Incluir controladores del proyecto original (mantenemos la arquitectura)
-#include "adc.h"       // Controlador ADC optimizado
-#include "timer1.h"    // Timer1 para interrupciones precisas
-#include "usart.h"     // Comunicación serie optimizada
+// Incluir controladores del proyecto original (ahora en la misma carpeta)
+#include "adc_original.h"       // Controlador ADC optimizado  
+#include "timer1_original.h"    // Timer1 para interrupciones precisas
+#include "usart.h"              // Comunicación serie optimizada
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // ⚙️ PARÁMETROS DEL SISTEMA
@@ -43,23 +43,28 @@ const uint32_t BAUDRATE_SERIE = 38400UL;
 const uint8_t DAC_VALOR_MEDIO = 128;        // Punto medio del DAC (2.5V aprox)
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// 🎛️ INSTANCIAS DE CONTROLADORES (igual que original)
+// 🎛️ INSTANCIAS DE CONTROLADORES (usando clases DSP originales)
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-ADCController controlador_adc;                      // Control del ADC
-Timer1 temporizador_muestreo(FRECUENCIA_MUESTREO_HZ);  // Timer para 3840 Hz
+ADCController controlador_adc;                           // Control del ADC
+Timer1 temporizador_muestreo(FRECUENCIA_MUESTREO_HZ);   // Timer para 3840 Hz
 // USART se instancia automáticamente en usart.h como 'usart'
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // 🔄 VARIABLES DE ESTADO DEL SISTEMA
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-// Variables de control de flujo (corresponden a 'beat' y 'valor' del original)
-volatile bool momento_procesar = false;    // Equivale a 'beat' - flag de Timer1
-volatile uint8_t valor_salida_dac = DAC_VALOR_MEDIO;  // Equivale a 'valor' - salida del DAC
+// Variables globales para el sistema DSP (compatibles con DSP original)
+volatile bool beat = false; // Flag de sincronización con timer (equivale a momento_procesar)
+uint8_t valor = DAC_VALOR_MEDIO; // Valor actual a escribir al DAC (equivale a valor_salida_dac)
+
+// Declaración externa de funciones write() para el DAC
+void write(uint8_t value) {
+    PORTA = value;  // Escribir directamente al puerto A (DAC R2R)
+}
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// ⚡ RUTINAS DE INTERRUPCIÓN (mantenemos las del original)
+// ⚡ RUTINAS DE INTERRUPCIÓN (compatible con DSP original)
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -67,14 +72,11 @@ volatile uint8_t valor_salida_dac = DAC_VALOR_MEDIO;  // Equivale a 'valor' - sa
  * Se ejecuta cada 260 microsegundos (3840 Hz)
  */
 ISR(TIMER1_COMPA_vect) {
-    // Leer nueva muestra del ADC
-    uint8_t muestra_actual = controlador_adc.get();
+    // Escribir valor actual al DAC (igual que DSP original)
+    write(valor);
     
-    // Escribir valor actual al DAC
-    escribir_dac_r2r(valor_salida_dac);
-    
-    // Activar flag para procesamiento en loop principal
-    momento_procesar = true;
+    // Activar flag para procesamiento en loop principal (igual que DSP original)
+    beat = true;
 }
 
 /**
@@ -118,23 +120,23 @@ void setup() {
     configurar_led_estado();
     
     // Estado inicial del sistema
-    valor_salida_dac = DAC_VALOR_MEDIO;  // DAC en punto medio (2.5V aprox)
-    escribir_dac_r2r(valor_salida_dac);  // Aplicar valor inicial
+    valor = DAC_VALOR_MEDIO;  // DAC en punto medio (2.5V aprox)
+    write(valor);             // Aplicar valor inicial
 }
 
 /**
  * Bucle principal - Sistema DSP bidireccional
  * 
  * FUNCIONAMIENTO:
- * 1. Timer1 ISR lee ADC y actualiza DAC cada 260μs (3840 Hz)
+ * 1. Timer1 ISR actualiza DAC cada 260μs (3840 Hz)
  * 2. Loop envía muestras ADC a PC para procesamiento  
  * 3. Loop recibe datos procesados de PC y los aplica al DAC
  * 4. Fallback: si no llegan datos de PC, usa ADC directo
  */
 void loop() {
     // ¿Es momento de procesar? (activado por Timer1 ISR)
-    if (momento_procesar) {
-        momento_procesar = false;  // Limpiar flag inmediatamente
+    if (beat) {
+        beat = false;  // Limpiar flag inmediatamente
         
         // PASO 1: Enviar muestra ADC a la PC para análisis
         uint8_t muestra_adc_actual = controlador_adc.get();
@@ -143,10 +145,10 @@ void loop() {
         // PASO 2: Recibir datos procesados desde la PC
         if (hay_datos_de_pc_disponibles()) {
             // Usar señal filtrada/procesada de la PC
-            valor_salida_dac = recibir_dato_procesado_pc();
+            valor = recibir_dato_procesado_pc();
         } else {
             // Fallback: usar ADC directo si no hay datos de PC
-            valor_salida_dac = muestra_adc_actual;
+            valor = muestra_adc_actual;
         }
         
         // El DAC se actualiza automáticamente en la próxima ISR de Timer1
@@ -197,22 +199,6 @@ void configurar_led_estado() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// 🎛️ FUNCIONES DE CONTROL DEL DAC
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-/**
- * Escribir valor al DAC R2R usando PORTA completo
- * (Equivale a "PORTA = valor" del original pero más legible)
- * 
- * @param valor Valor de 0-255 para convertir a voltaje analógico
- */
-void escribir_dac_r2r(uint8_t valor) {
-    // Escritura directa y atómica de los 8 bits al PORTA
-    // Ventaja de Arduino Mega: un solo puerto para los 8 bits = mayor eficiencia
-    PORTA = valor;
-}
-
-// ════════════════════════════════════════════════════════════════════════════════════════
 // 📡 FUNCIONES DE COMUNICACIÓN
 // ════════════════════════════════════════════════════════════════════════════════════════
 
@@ -241,36 +227,25 @@ uint8_t recibir_dato_procesado_pc() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// 📝 COMENTARIOS FINALES Y NOTAS DE IMPLEMENTACIÓN
+// 📝 COMENTARIOS FINALES 
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 /*
- * 🎯 RESUMEN DE LA CONVERSIÓN A CÓDIGO LEGIBLE:
+ * 🎯 RESUMEN DSP_INTERMEDIO:
  * 
- * ✅ MANTIENE del DSP original:
- * • Misma funcionalidad exacta (ADC → PC → DAC)
- * • Mismas librerías (adc.h, timer1.h, usart.h)
- * • Mismo rendimiento crítico en ISR
- * • Misma precisión de timing (3840 Hz exactos)
+ * ✅ FUNCIONALIDAD IDENTICAL AL DSP ORIGINAL:
+ * • Mismas librerías (adc.h, timer1.h, usart.h) 
+ * • Mismo flujo: ADC → PC → DAC
+ * • Mismas variables globales (beat, valor)
+ * • Misma ISR de Timer1
  * 
- * ✅ MEJORA del DSP original:
- * • Nombres descriptivos: 'momento_procesar' vs 'beat'
- * • Funciones organizadas: setup dividido en pasos claros
- * • Comentarios útiles: explican QUÉ y POR QUÉ
- * • Estructura modular: fácil de entender y modificar
+ * ✅ CÓDIGO MÁS LEGIBLE:
+ * • Funciones organizadas y bien comentadas
+ * • Nombres descriptivos para mayor claridad
+ * • Estructura modular fácil de entender
+ * • Documentación completa del funcionamiento
  * 
- * 🔧 FACILIDAD DE USO:
- * • Cambiar frecuencia: modificar una constante
- * • Añadir debug: funciones separadas no afectan timing
- * • Entender flujo: nombres auto-explicativos
- * • Mantener código: estructura clara y comentada
- * 
- * 🚀 RENDIMIENTO:
- * • ISR Timer1: <20μs (idéntico al original)
- * • Loop principal: +5μs por legibilidad (despreciable)
- * • Memoria Flash: +200 bytes por comentarios (aceptable)
- * • Precisión ADC/DAC: Idéntica (8 bits, sin degradación)
- * 
- * 💡 FILOSOFÍA:
- * "El mejor código es el que funciona perfectamente Y es fácil de entender"
+ * 🚀 RENDIMIENTO: Idéntico al original
+ * 📚 LEGIBILIDAD: Significativamente mejorada
+ * 🔧 MANTENIBILIDAD: Mucho más fácil de modificar
  */

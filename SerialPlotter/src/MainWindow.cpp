@@ -292,62 +292,41 @@ void MainWindow::DrawSidebar()
     }
     
     ComboBaudRate(settings->baud_rate);
-    
-    // Validación de ancho de banda serial
-    // Calcular ancho de banda necesario vs disponible
-    int required_bandwidth = settings->sampling_rate * 2 * 10; // 2 bytes/muestra × 10 bits/byte
-    float bandwidth_ratio = (float)settings->baud_rate / required_bandwidth;
-    
-    if (bandwidth_ratio < 1.0f) {
-        // Advertencia: baudrate insuficiente
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.0f, 1.0f)); // Naranja/rojo
-        ImGui::TextWrapped("ADVERTENCIA: Baudrate insuficiente!");
-        ImGui::Text("Necesario: %d bps", required_bandwidth);
-        ImGui::Text("Actual: %d bps (%.0f%%)", settings->baud_rate, bandwidth_ratio * 100);
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("La señal se trabara o perdera muestras.\n"
-                             "Soluciones:\n"
-                             "1. Aumentar Velocidad a 115200 o mas\n"
-                             "2. Reducir Frecuencia de muestreo");
-        }
-    }
-    else if (bandwidth_ratio < 1.2f) {
-        // Advertencia: baudrate ajustado (puede tener problemas)
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f)); // Amarillo
-        ImGui::Text("Baudrate ajustado (%.0f%% usado)", bandwidth_ratio * 100);
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("El baudrate esta al limite.\n"
-                             "Recomendado: aumentar a 115200+ para mas margen.");
-        }
-    }
-    else {
-        // OK: baudrate suficiente
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f)); // Verde
-        ImGui::Text("Baudrate OK (%.0f%% usado)", (1.0f / bandwidth_ratio) * 100);
-        ImGui::PopStyleColor();
-    }
-    
     ImGui::Spacing();
 
     // Mapeo de valores ADC (0-255) a voltaje (-6V a +6V)
-    if (ImGui::SliderInt("Maximo", &settings->maximum, 0, 255)) {
+    if (ImGui::InputInt("Maximo (0-255)", &settings->maximum, 1, 10)) {
+        // Validar rango
+        if (settings->maximum < 0) {
+            settings->maximum = 0;
+        }
+        if (settings->maximum > 255) {
+            settings->maximum = 255;
+        }
         settings->map_factor = 12.0 / (settings->maximum - settings->minimum);
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Valor ADC que corresponde a +6V\n"
                          "Calibracion: ajusta segun el rango real de tu hardware\n"
-                         "Por defecto: 255 (rango completo ADC)");
+                         "Por defecto: 255 (rango completo ADC)\n"
+                         "Paso: 1 | Paso rapido: 10");
     }
     
-    if (ImGui::SliderInt("Minimo", &settings->minimum, 0, 255)) {
+    if (ImGui::InputInt("Minimo (0-255)", &settings->minimum, 1, 10)) {
+        // Validar rango
+        if (settings->minimum < 0) {
+            settings->minimum = 0;
+        }
+        if (settings->minimum > 255) {
+            settings->minimum = 255;
+        }
         settings->map_factor = 12.0 / (settings->maximum - settings->minimum);
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Valor ADC que corresponde a -6V\n"
                          "Calibracion: ajusta segun el rango real de tu hardware\n"
-                         "Por defecto: 0 (rango completo ADC)");
+                         "Por defecto: 0 (rango completo ADC)\n"
+                         "Paso: 1 | Paso rapido: 10");
     }
     
     // Selector de tiempo por división (como en un osciloscopio real)
@@ -501,17 +480,13 @@ void MainWindow::Stop() {
 void MainWindow::SelectFilter(Filter filter) {
     selected_filter = filter;
     
-    // Ajustar rango de frecuencia de corte según el tipo de filtro
+    // Rango completo para todos los filtros: desde 1 Hz hasta frecuencia de Nyquist
     switch (selected_filter)
     {
         case Filter::LowPass:
-            // Pasa bajos: frecuencia de corte entre 1 Hz y Nyquist/2
-            min_cutoff_frequency = 1;
-            max_cutoff_frequency = settings->sampling_rate / 4;
-            break;
         case Filter::HighPass:
-            // Pasa altos: frecuencia de corte entre Nyquist/2 y casi Nyquist
-            min_cutoff_frequency = settings->sampling_rate / 4;
+            // Ambos filtros permiten el rango completo de frequencias
+            min_cutoff_frequency = 1;
             max_cutoff_frequency = settings->sampling_rate / 2 - 1;
             break;
         case Filter::None:
@@ -655,6 +630,8 @@ void MainWindow::Draw()
     }
     else {
         // Modo en vivo: usar buffers circulares actuales (actualizados por SerialWorker)
+        // Proteger lectura de punteros contra modificaciones del SerialWorker
+        std::lock_guard<std::mutex> lock(data_mutex);
         dataX = scrollX ? scrollX->data() : nullptr;
         dataY = scrollY ? scrollY->data() : nullptr;
         dataY_filtered = filter_scrollY ? filter_scrollY->data() : nullptr;
@@ -796,10 +773,34 @@ void MainWindow::Draw()
         }
 
         // Control de frecuencia de corte (solo visible si hay filtro activo)
-        if (selected_filter != Filter::None
-            && ImGui::SliderInt("Frecuencia de corte", &cutoff_frequency[(int)selected_filter], min_cutoff_frequency, max_cutoff_frequency)) {
-            SetupFilter();
-            ResetFilters();
+        if (selected_filter != Filter::None) {
+            // Campo de entrada numérico para frecuencia de corte
+            int* freq_ptr = &cutoff_frequency[(int)selected_filter];
+            
+            // Crear etiqueta con rangos dinámicos
+            char label[100];
+            snprintf(label, sizeof(label), "Frecuencia de corte (%d-%d Hz)", 
+                     min_cutoff_frequency, max_cutoff_frequency);
+            
+            if (ImGui::InputInt(label, freq_ptr, 10, 100)) {
+                // Validar rango y aplicar límites
+                if (*freq_ptr < min_cutoff_frequency) {
+                    *freq_ptr = min_cutoff_frequency;
+                }
+                if (*freq_ptr > max_cutoff_frequency) {
+                    *freq_ptr = max_cutoff_frequency;
+                }
+                
+                SetupFilter();
+                ResetFilters();
+            }
+            
+            // Texto de ayuda
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Introduce la frecuencia de corte en Hz\nPaso: 10 Hz | Paso rápido: 100 Hz");
+            }
         }
     }
 
