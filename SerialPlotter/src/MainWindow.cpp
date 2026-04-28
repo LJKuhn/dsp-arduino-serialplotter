@@ -293,42 +293,6 @@ void MainWindow::DrawSidebar()
     
     ComboBaudRate(settings->baud_rate);
     
-    // Validación de ancho de banda serial
-    // Calcular ancho de banda necesario vs disponible
-    int required_bandwidth = settings->sampling_rate * 2 * 10; // 2 bytes/muestra × 10 bits/byte
-    float bandwidth_ratio = (float)settings->baud_rate / required_bandwidth;
-    
-    if (bandwidth_ratio < 1.0f) {
-        // Advertencia: baudrate insuficiente
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.0f, 1.0f)); // Naranja/rojo
-        ImGui::TextWrapped("ADVERTENCIA: Baudrate insuficiente!");
-        ImGui::Text("Necesario: %d bps", required_bandwidth);
-        ImGui::Text("Actual: %d bps (%.0f%%)", settings->baud_rate, bandwidth_ratio * 100);
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("La señal se trabara o perdera muestras.\n"
-                             "Soluciones:\n"
-                             "1. Aumentar Velocidad a 115200 o mas\n"
-                             "2. Reducir Frecuencia de muestreo");
-        }
-    }
-    else if (bandwidth_ratio < 1.2f) {
-        // Advertencia: baudrate ajustado (puede tener problemas)
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.0f, 1.0f)); // Amarillo
-        ImGui::Text("Baudrate ajustado (%.0f%% usado)", bandwidth_ratio * 100);
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("El baudrate esta al limite.\n"
-                             "Recomendado: aumentar a 115200+ para mas margen.");
-        }
-    }
-    else {
-        // OK: baudrate suficiente
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f)); // Verde
-        ImGui::Text("Baudrate OK (%.0f%% usado)", (1.0f / bandwidth_ratio) * 100);
-        ImGui::PopStyleColor();
-    }
-    
     ImGui::Spacing();
 
     // Mapeo de valores ADC (0-255) a voltaje (-6V a +6V)
@@ -850,21 +814,96 @@ void MainWindow::Draw()
         if (ImPlot::BeginPlot("Espectro", { -1, graph_height }, ImPlotFlags_NoLegend)) {
             ImPlot::SetupAxisFormat(ImAxis_Y1, MetricFormatter, (void*)"V");
             ImPlot::SetupAxisFormat(ImAxis_X1, MetricFormatter, (void*)"Hz");
-            ImPlot::SetupAxisLimits(ImAxis_X1, 0.99, settings->samples, ImGuiCond_FirstUseEver);
+            
+            // Configurar escala del eje X según selección del usuario
+            if (spectrum_log_scale) {
+                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0.99, settings->samples, ImGuiCond_FirstUseEver);
+            } else {
+                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Linear);
+                // En escala lineal, mostrar desde 0 Hz hasta Nyquist (fs/2)
+                double nyquist_freq = settings->sampling_rate / 2.0;
+                ImPlot::SetupAxisLimits(ImAxis_X1, 0, nyquist_freq, ImGuiCond_FirstUseEver);
+            }
+            
             ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_AutoFit);
-
-            ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
             ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0, INFINITY);
 
+            // Dibujar el espectro FFT
             fft->Plot(settings->sampling_rate);
+            
+            // Marcador visual de la frecuencia dominante (línea vertical roja)
+            if (show_dominant_frequency_marker && scrollY && scrollY->count() > 0) {
+                double dominant_freq = fft->Frequency(settings->sampling_rate);
+                if (dominant_freq > 0) {
+                    // Obtener los límites actuales del gráfico para la altura de la línea
+                    ImPlotRect limits = ImPlot::GetPlotLimits();
+                    double line_x[2] = { dominant_freq, dominant_freq };
+                    double line_y[2] = { limits.Y.Min, limits.Y.Max };
+                    
+                    ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.9f, 0.1f, 0.1f, 0.8f)); // Rojo semi-transparente
+                    ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f); // Línea más gruesa
+                    ImPlot::PlotLine("Freq. Dominante", line_x, line_y, 2);
+                    ImPlot::PopStyleVar();
+                    ImPlot::PopStyleColor();
+                }
+            }
+            
             ImPlot::EndPlot();
+        }
+        
+        // === CONTROLES DEL ESPECTRO ===
+        // Botones para alternar escala del eje X
+        ImGui::Spacing();
+        ImGui::Text("Escala del eje X:");
+        ImGui::SameLine();
+        
+        if (spectrum_log_scale) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+            ImGui::Button("Logarítmica");
+            ImGui::PopStyleColor();
+        } else {
+            if (ImGui::Button("Logarítmica")) {
+                spectrum_log_scale = true;
+            }
+        }
+        
+        ImGui::SameLine();
+        
+        if (!spectrum_log_scale) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonActive]);
+            ImGui::Button("Lineal");
+            ImGui::PopStyleColor();
+        } else {
+            if (ImGui::Button("Lineal")) {
+                spectrum_log_scale = false;
+            }
+        }
+        
+        // Checkbox para mostrar/ocultar marcador de frecuencia dominante
+        ImGui::SameLine();
+        ImGui::Checkbox("Mostrar freq. dominante", &show_dominant_frequency_marker);
 
-            // Mostrar información de frecuencia dominante y offset DC
+            // === INFORMACIÓN DE ANÁLISIS ESPECTRAL ===
             if (scrollY && scrollY->count() > 0) {
-                ImGui::Text("Frecuencia dominante: %s\tOffset DC: %s",
-                            MetricFormatter(fft->Frequency(settings->sampling_rate), "Hz").data(),
-                            MetricFormatter(fft->Offset(), "V").data()
-                );
+                ImGui::Spacing();
+                ImGui::Separator();
+                
+                // Mostrar información de frecuencia dominante de forma prominente
+                double dominant_freq = fft->Frequency(settings->sampling_rate);
+                double dc_offset = fft->Offset();
+                
+                // Texto con formato destacado para frecuencia dominante
+                ImGui::Text("FRECUENCIA DOMINANTE (FUNDAMENTAL):");
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.9f, 0.1f, 0.1f, 1.0f), "%s", 
+                                  MetricFormatter(dominant_freq, "Hz").data());
+                
+                // Información adicional en misma línea
+                ImGui::SameLine();
+                ImGui::Text("|");
+                ImGui::SameLine();
+                ImGui::Text("Offset DC: %s", MetricFormatter(dc_offset, "V").data());
                 
                 ImGui::Spacing();
                 ImGui::Separator();
@@ -928,7 +967,6 @@ void MainWindow::Draw()
                                       "  No hay datos suficientes para análisis");
                 }
             }
-        }
     }
 
     ImGui::End();

@@ -122,6 +122,10 @@ private:
 
     bool do_analysis_work = true;
     bool analysis_open = true;  // Sección Análisis abierta por defecto en UI
+    
+    // Control del gráfico de espectros
+    bool spectrum_log_scale = true;  // true = logarítmica, false = lineal
+    bool show_dominant_frequency_marker = true;  // Mostrar marcador de frecuencia dominante
     void AnalysisWorker();      // Hilo que calcula FFT periódicamente
 
     float sidebar_width = 240;  // Ancho del panel lateral de control (píxeles)

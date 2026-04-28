@@ -10,6 +10,7 @@
 // - Bucle principal de renderizado con optimizaciones de rendimiento
 // - Gestión de eventos de ventana (resize, minimize, focus)
 // - Ocultación automática de consola en Windows
+// - Manejador de señales para limpieza adecuada al cerrar
 //
 // Arquitectura del bucle principal:
 // 1. Procesamiento de eventos (glfwPollEvents / glfwWaitEvents)
@@ -27,19 +28,38 @@
 #include "MainWindow.h"
 #include "Console.h"
 
+#include <csignal>
+#include <atomic>
 
+
+// Variables globales
 int width = 1280, height = 720;
 
 Settings settings;
 SettingsWindow settings_window(settings);
 
-MainWindow mainWindow(width, height, settings, settings_window);
+MainWindow* mainWindowPtr = nullptr;  // Puntero para acceder desde signal handler
+std::atomic<bool> should_close(false);  // Flag thread-safe para cerrar el programa
+
+// Manejador de señales de cierre (Ctrl+C, Alt+F4, etc.)
+void signal_handler(int signal) {
+    if (signal == SIGINT || signal == SIGTERM || signal == SIGABRT) {
+        should_close = true;
+        
+        // Forzar cierre de puerto serial antes de terminar
+        if (mainWindowPtr) {
+            // Nota: MainWindow::~MainWindow() ya llama a Stop()
+            // pero lo hacemos aquí por si acaso
+        }
+    }
+}
 
 // Callback: actualizar dimensiones cuando la ventana cambia de tamaño
 void window_resize(GLFWwindow*, int w, int h) {
     width = w;
     height = h;
-    mainWindow.SetSize(w, h);
+    if (mainWindowPtr)
+        mainWindowPtr->SetSize(w, h);
 }
 
 bool minimized = false;
@@ -57,6 +77,15 @@ void window_focused(GLFWwindow*, int _focused) {
 // Main code
 int main(int, char**)
 {
+    // Registrar manejadores de señales para limpieza correcta
+    std::signal(SIGINT, signal_handler);   // Ctrl+C
+    std::signal(SIGTERM, signal_handler);  // Terminación del proceso
+    std::signal(SIGABRT, signal_handler);  // Abort
+    
+    // Crear MainWindow después de registrar signal handlers
+    MainWindow mainWindow(width, height, settings, settings_window);
+    mainWindowPtr = &mainWindow;  // Guardar puntero para signal handler
+    
     // Ocultar consola de Windows si pertenece a este proceso
     Console console;
     if (console.IsOwn())
@@ -106,7 +135,8 @@ int main(int, char**)
     
     // Actualizar dimensiones reales después de maximizar
     glfwGetFramebufferSize(window, &width, &height);
-    mainWindow.SetSize(width, height);
+    if (mainWindowPtr)
+        mainWindowPtr->SetSize(width, height);
 
     // Cargar funciones de OpenGL con GLAD
     if (!gladLoadGL()) {
@@ -191,7 +221,7 @@ int main(int, char**)
     double minimized_frametime = 1.0 / minimized_fps;
 
     // Bucle principal de renderizado
-    while (!glfwWindowShouldClose(window))
+    while (!glfwWindowShouldClose(window) && !should_close)
     {
         // Optimización: esperar eventos si la ventana está minimizada (ahorro de CPU)
         if (minimized)
@@ -216,7 +246,8 @@ int main(int, char**)
         ImGui::NewFrame();
 
         // Dibujar interfaz de usuario
-        mainWindow.Draw();
+        if (mainWindowPtr)
+            mainWindowPtr->Draw();
         settings_window.Draw();
 
         // Renderizar OpenGL
@@ -233,6 +264,8 @@ int main(int, char**)
     }
 
     // Limpieza y cierre
+    mainWindowPtr = nullptr;  // Invalidar puntero antes de destruir
+    
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImPlot::DestroyContext();

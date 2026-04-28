@@ -33,7 +33,8 @@ class FFT {
 	std::vector<double> amplitudes;  // Buffer de salida (magnitudes de frecuencias)
 
 	double offset = 0;        // Offset DC (componente de frecuencia 0)
-	int n_frequency = 0;      // �ndice de la frecuencia dominante	std::vector<Harmonic> detected_harmonics;  // Almacena las armónicas detectadas
+	int n_frequency = 0;      // �ndice de la frecuencia dominante
+	std::vector<Harmonic> detected_harmonics;  // Almacena las armónicas detectadas
 public:
 	// Constructor
 	// sample_count: n�mero de muestras a analizar (debe ser potencia de 2 para mejor rendimiento)
