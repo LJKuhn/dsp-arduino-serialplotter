@@ -2,9 +2,9 @@
 
 ## 🎯 **Descripción**
 
-Sistema avanzado que genera **12 tipos diferentes de señales** de forma automática, cambiando cada **15 segundos** en un ciclo repetitivo. Cada señal tiene **frecuencia y rango de voltaje específicos** para pruebas completas de sistemas DSP.
+Sistema avanzado que genera **18 tipos diferentes de señales** de forma automática, cambiando cada **15 segundos** en un ciclo repetitivo. Cada señal tiene **frecuencia y rango de voltaje específicos** para pruebas completas de sistemas DSP, incluyendo **test de aliasing** con frecuencias superiores al límite de Nyquist (1920 Hz).
 
-## 📊 **Ciclo de Señales (12 estados × 15s = 3 minutos)**
+## 📊 **Ciclo de Señales (18 estados × 15s = 4.5 minutos)**
 
 | Estado | Forma      | Frecuencia | Rango Voltaje | Offset | Amplitud | Descripción |
 |--------|------------|------------|---------------|---------|----------|-------------|
@@ -20,8 +20,23 @@ Sistema avanzado que genera **12 tipos diferentes de señales** de forma automá
 | **9**  | Senoidal   | **10 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media, rango completo |
 | **10** | Senoidal   | **80 Hz**  | **0V - 5V**   | 0V     | 5V       | Señal media-alta, rango completo |
 | **11** | Senoidal   | **300 Hz** | **0V - 5V**   | 0V     | 5V       | Señal rápida, rango completo |
+| **12** | Senoidal   | **500 Hz** | **0V - 5V**   | 0V     | 5V       | **Test Nyquist** (< 1920 Hz) |
+| **13** | Senoidal   | **900 Hz** | **0V - 5V**   | 0V     | 5V       | **Test Nyquist** (< 1920 Hz) |
+| **14** | Senoidal   | **1200 Hz** | **0V - 5V**  | 0V     | 5V       | **Test Nyquist** (< 1920 Hz) |
+| **15** | Senoidal   | **1500 Hz** | **0V - 5V**  | 0V     | 5V       | **Test Nyquist** (< 1920 Hz) |
+| **16** | Senoidal   | **1800 Hz** | **0V - 5V**  | 0V     | 5V       | ⚠️ **Test aliasing** (> 1920 Hz) |
+| **17** | Senoidal   | **2000 Hz** | **0V - 5V**  | 0V     | 5V       | ⚠️ **Test aliasing** (> 1920 Hz) |
 
-**Después del estado 11, vuelve automáticamente al estado 0.**
+**Después del estado 17, vuelve automáticamente al estado 0.**
+
+### 🔬 **Frecuencias para Test de Aliasing**
+
+Las frecuencias **1800 Hz y 2000 Hz** superan el límite de Nyquist (1920 Hz) del sistema receptor que muestrea a 3840 Hz. Estas señales producirán **aliasing** visible:
+
+- **1800 Hz real** → Detectado como **~2040 Hz** (espejo: 3840 - 1800)
+- **2000 Hz real** → Detectado como **~1840 Hz** (espejo: 3840 - 2000)
+
+Esto permite **verificar experimentalmente** el fenómeno de aliasing documentado en el informe.
 
 ## ⚡ **Especificaciones Técnicas**
 
@@ -60,15 +75,27 @@ Pin 7 (PORTD.7) → Resistor 2R → Bit 5 (MSB)
 
 ## 📈 **Ventajas para Testing DSP**
 
-### **Señales de 2 Hz** (Estados 0, 2, 4):
+### **Señales de 2 Hz** (Estados 0, 4, 8):
 - ✅ **Visualización fácil**: Se puede ver forma completa en osciloscopio
 - ✅ **Calibración**: Permite ajustar ganancia y offset de sistemas
 - ✅ **Debugging**: Ideal para verificar funcionamiento básico
 
-### **Señales de 300 Hz** (Estados 1, 3, 5):  
+### **Señales de 300 Hz** (Estados 3, 7, 11):  
 - ✅ **Test de ancho de banda**: Verifica respuesta en frecuencia  
 - ✅ **Test de slew rate**: Evalúa velocidad de cambio máxima
 - ✅ **Test de distorsión**: Detecta no-linealidades del sistema
+
+### **Señales de 500-1500 Hz** (Estados 12-15):
+- ✅ **Test de límite Nyquist**: Frecuencias bajo el límite de 1920 Hz
+- ✅ **Verificación FFT**: Deben aparecer en bins correctos
+- ✅ **Respuesta en frecuencia**: Evaluar filtros pasa-bajos/altos
+
+### **Señales de 1800-2000 Hz** (Estados 16-17):
+- ⚠️ **Demostración de aliasing**: Superan límite de Nyquist (1920 Hz)
+- ⚠️ **Validación experimental**: Verificar teoría de muestreo
+- ⚠️ **Frecuencias esperadas en receptor**:
+  - 1800 Hz → Detectado como ~2040 Hz
+  - 2000 Hz → Detectado como ~1840 Hz
 
 ### **Rangos de voltaje**:
 - **1V-4V**: Test de rango dinámico parcial
@@ -78,8 +105,15 @@ Pin 7 (PORTD.7) → Resistor 2R → Bit 5 (MSB)
 
 El monitor serie muestra cada 5 segundos:
 ```
-Estado actual: 2 - Cuadrada 2Hz 1V-4V | Cambio en: 18 segundos
+Estado actual: 16 - Senoidal 1800Hz 0V-5V | Cambio en: 8 segundos
 ```
+
+Al cambiar de estado:
+```
+Cambiando a estado 17: Senoidal 2000Hz 0V-5V
+```
+
+**Nota:** Los estados 16 y 17 mostrarán aliasing en el receptor (frecuencias > 1920 Hz Nyquist).
 
 ## 🔧 **Modificaciones Posibles**
 
@@ -90,11 +124,12 @@ const uint32_t INTERVALO_CAMBIO = 15000;  // 15 segundos en lugar de 30
 
 ### **Agregar nuevo estado:**
 ```cpp
-const ConfigEstado configuraciones[7] = {
-  // ... estados existentes ...
-  {2, 1, 32, 31, "Senoidal 1kHz 2.5V±1.25V"}  // Nuevo estado
+const ConfigEstado configuraciones[19] = {
+  // ... 18 estados existentes ...
+  {2, 10, 32, 31, "Senoidal 440Hz 2.5V±1.25V"}  // Nuevo estado (La musical)
 };
 ```
+Nota: También necesitas agregar el incremento correspondiente en `incrementos_freq[]` y divisor en `divisores_freq[]`.
 
 ### **Cambiar frecuencias:**
 ```cpp
