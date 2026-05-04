@@ -9,25 +9,21 @@
  * - Pin 13: LED indicador que parpadea con cada cambio de forma
  * 
  * Ciclo automático (cada 15 segundos):
- * 1.  Triangular 2Hz,   1V-4V   (offset 1V, amplitud 3V)
- * 2.  Triangular 10Hz,  0V-5V   (offset 0V, amplitud 5V)
- * 3.  Triangular 80Hz,  0V-5V   (offset 0V, amplitud 5V)
- * 4.  Triangular 300Hz, 0V-5V   (offset 0V, amplitud 5V) 
- * 5.  Cuadrada 2Hz,     1V-4V   (offset 1V, amplitud 3V)
- * 6.  Cuadrada 10Hz,    0V-5V   (offset 0V, amplitud 5V)
- * 7.  Cuadrada 80Hz,    0V-5V   (offset 0V, amplitud 5V)
- * 8.  Cuadrada 300Hz,   0V-5V   (offset 0V, amplitud 5V)
- * 9.  Senoidal 2Hz,     1V-4V   (offset 1V, amplitud 3V)
- * 10. Senoidal 10Hz,    0V-5V   (offset 0V, amplitud 5V)
- * 11. Senoidal 80Hz,    0V-5V   (offset 0V, amplitud 5V)
- * 12. Senoidal 300Hz,   0V-5V   (offset 0V, amplitud 5V)
- * 13. Senoidal 500Hz,   0V-5V   (offset 0V, amplitud 5V) - Test Nyquist
- * 14. Senoidal 900Hz,   0V-5V   (offset 0V, amplitud 5V) - Test Nyquist
- * 15. Senoidal 1200Hz,  0V-5V   (offset 0V, amplitud 5V) - Test Nyquist
- * 16. Senoidal 1500Hz,  0V-5V   (offset 0V, amplitud 5V) - Test Nyquist
- * 17. Senoidal 1800Hz,  0V-5V   (offset 0V, amplitud 5V) - Test aliasing
- * 18. Senoidal 2000Hz,  0V-5V   (offset 0V, amplitud 5V) - Test aliasing
- * - Repetir...
+ * 1.  Senoidal 500Hz   0V-5V   (Test Nyquist)
+ * 2.  Senoidal 900Hz   0V-5V   (Test Nyquist)
+ * 3.  Senoidal 1200Hz  0V-5V   (Test Nyquist)
+ * 4.  Senoidal 1800Hz  0V-5V   (Test Nyquist)
+ * 5.  Senoidal 2500Hz  0V-5V   (Test aliasing)
+ * 6.  Cuadrada 900Hz   0V-5V   (Test Nyquist)
+ * 7.  Cuadrada 1200Hz  0V-5V   (Test Nyquist)
+ * 8.  Cuadrada 1800Hz  0V-5V   (Test Nyquist)
+ * 9.  Cuadrada 2500Hz  0V-5V   (Test aliasing)
+ * 
+ * TRIANGULARES COMENTADAS POR RAM:
+ * 10. Triangular 900Hz  0V-5V   (Test Nyquist)  -- DESACTIVADO
+ * 11. Triangular 1200Hz 0V-5V   (Test Nyquist)  -- DESACTIVADO 
+ * 12. Triangular 1800Hz 0V-5V   (Test Nyquist)  -- DESACTIVADO
+ * 13. Triangular 2500Hz 0V-5V   (Test aliasing) -- DESACTIVADO
  * 
  * Frecuencia de muestreo: 3840 Hz
  * Resolución: 6 bits (0-63 niveles)
@@ -43,7 +39,7 @@
 Timer1 timer1(3840.0);
 
 // Variables para control de forma de onda
-uint8_t estado_actual = 0;              // 0-5: Estados del ciclo
+uint8_t estado_actual = 0;              // 0-8: Estados del ciclo (sin triangulares por RAM)
 uint16_t indice_tabla = 0;              // Índice actual en la tabla de forma de onda
 uint32_t ultimo_cambio = 0;             // Timestamp del último cambio de forma
 const uint32_t INTERVALO_CAMBIO = 15000;  // 15 segundos en milisegundos
@@ -61,65 +57,49 @@ struct ConfigEstado {
   const char* nombre;   // Descripción para debug
 };
 
-const ConfigEstado configuraciones[18] = {
-  {0, 0, 13, 38, "Triangular 2Hz 1V-4V"},    // offset=1V(13), amp=3V(38)
-  {0, 3, 0,  63, "Triangular 10Hz 0V-5V"},   // offset=0V(0),  amp=5V(63)
-  {0, 2, 0,  63, "Triangular 80Hz 0V-5V"},   // offset=0V(0),  amp=5V(63)
-  {0, 1, 0,  63, "Triangular 300Hz 0V-5V"},  // offset=0V(0),  amp=5V(63) 
-  {1, 0, 13, 38, "Cuadrada 2Hz 1V-4V"},      // offset=1V(13), amp=3V(38)
-  {1, 3, 0,  63, "Cuadrada 10Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
-  {1, 2, 0,  63, "Cuadrada 80Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
-  {1, 1, 0,  63, "Cuadrada 300Hz 0V-5V"},    // offset=0V(0),  amp=5V(63)
-  {2, 0, 13, 38, "Senoidal 2Hz 1V-4V"},      // offset=1V(13), amp=3V(38)
-  {2, 3, 0,  63, "Senoidal 10Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
-  {2, 2, 0,  63, "Senoidal 80Hz 0V-5V"},     // offset=0V(0),  amp=5V(63)
-  {2, 1, 0,  63, "Senoidal 300Hz 0V-5V"},    // offset=0V(0),  amp=5V(63)
-  {2, 4, 0,  63, "Senoidal 500Hz 0V-5V"},    // offset=0V(0),  amp=5V(63) - Test Nyquist
-  {2, 5, 0,  63, "Senoidal 900Hz 0V-5V"},    // offset=0V(0),  amp=5V(63) - Test Nyquist
-  {2, 6, 0,  63, "Senoidal 1200Hz 0V-5V"},   // offset=0V(0),  amp=5V(63) - Test Nyquist
-  {2, 7, 0,  63, "Senoidal 1500Hz 0V-5V"},   // offset=0V(0),  amp=5V(63) - Test Nyquist
-  {2, 8, 0,  63, "Senoidal 1800Hz 0V-5V"},   // offset=0V(0),  amp=5V(63) - Test aliasing (>1920Hz)
-  {2, 9, 0,  63, "Senoidal 2000Hz 0V-5V"}    // offset=0V(0),  amp=5V(63) - Test aliasing (>1920Hz)
+const ConfigEstado configuraciones[9] = {
+  {2, 0, 0, 63, "Senoidal 500Hz 0V-5V"},     // forma=2(senoidal), freq=0(500Hz), offset=0V, amp=5V
+  {2, 1, 0, 63, "Senoidal 900Hz 0V-5V"},     // forma=2(senoidal), freq=1(900Hz), offset=0V, amp=5V
+  {2, 2, 0, 63, "Senoidal 1200Hz 0V-5V"},    // forma=2(senoidal), freq=2(1200Hz), offset=0V, amp=5V
+  {2, 3, 0, 63, "Senoidal 1800Hz 0V-5V"},    // forma=2(senoidal), freq=3(1800Hz), offset=0V, amp=5V
+  {2, 4, 0, 63, "Senoidal 2500Hz 0V-5V"},    // forma=2(senoidal), freq=4(2500Hz), offset=0V, amp=5V
+  {1, 1, 0, 63, "Cuadrada 900Hz 0V-5V"},     // forma=1(cuadrada), freq=1(900Hz), offset=0V, amp=5V
+  {1, 2, 0, 63, "Cuadrada 1200Hz 0V-5V"},    // forma=1(cuadrada), freq=2(1200Hz), offset=0V, amp=5V
+  {1, 3, 0, 63, "Cuadrada 1800Hz 0V-5V"},    // forma=1(cuadrada), freq=3(1800Hz), offset=0V, amp=5V
+  {1, 4, 0, 63, "Cuadrada 2500Hz 0V-5V"}     // forma=1(cuadrada), freq=4(2500Hz), offset=0V, amp=5V
+  
+  // ===== SEÑALES TRIANGULARES COMENTADAS PARA AHORRAR RAM =====
+  // DESCOMENTA ESTAS LÍNEAS SI TIENES MÁS RAM DISPONIBLE:
+  // {0, 1, 0, 63, "Triangular 900Hz 0V-5V"},   // forma=0(triangular), freq=1(900Hz), offset=0V, amp=5V
+  // {0, 2, 0, 63, "Triangular 1200Hz 0V-5V"},  // forma=0(triangular), freq=2(1200Hz), offset=0V, amp=5V
+  // {0, 3, 0, 63, "Triangular 1800Hz 0V-5V"},  // forma=0(triangular), freq=3(1800Hz), offset=0V, amp=5V
+  // {0, 4, 0, 63, "Triangular 2500Hz 0V-5V"}   // forma=0(triangular), freq=4(2500Hz), offset=0V, amp=5V
+  // NOTA: Si descomentas, cambia también el tamaño del array a [13] y la condición en cambiar_estado() a >= 13
 };
 
-// Incrementos de índice para diferentes frecuencias
+// Incrementos de índice para las frecuencias utilizadas
 // Para 3840 Hz de muestreo y tabla de 256 muestras:
-// - 2Hz:    incremento = (2 * 256) / 3840 = 0.133 ≈ usar cada 7.5 muestras
-// - 10Hz:   incremento = (10 * 256) / 3840 = 0.67 ≈ 2
-// - 80Hz:   incremento = (80 * 256) / 3840 = 5.33 ≈ 5
-// - 300Hz:  incremento = (300 * 256) / 3840 = 20
 // - 500Hz:  incremento = (500 * 256) / 3840 = 33.33 ≈ 33
 // - 900Hz:  incremento = (900 * 256) / 3840 = 60
 // - 1200Hz: incremento = (1200 * 256) / 3840 = 80
-// - 1500Hz: incremento = (1500 * 256) / 3840 = 100
 // - 1800Hz: incremento = (1800 * 256) / 3840 = 120
-// - 2000Hz: incremento = (2000 * 256) / 3840 = 133.33 ≈ 133
-const uint16_t incrementos_freq[10] = {
-  1,    // 2Hz: usar cada muestra (15Hz real con tabla 256 @ 3840Hz)
-  20,   // 300Hz: saltar 20 posiciones por muestra 
-  5,    // 80Hz: saltar 5 posiciones por muestra
-  2,    // 10Hz: saltar 2 posiciones por muestra
+// - 2500Hz: incremento = (2500 * 256) / 3840 = 166.67 ≈ 167 (aliasing)
+const uint16_t incrementos_freq[5] = {
   33,   // 500Hz: saltar 33 posiciones por muestra
   60,   // 900Hz: saltar 60 posiciones por muestra
   80,   // 1200Hz: saltar 80 posiciones por muestra
-  100,  // 1500Hz: saltar 100 posiciones por muestra
-  120,  // 1800Hz: saltar 120 posiciones por muestra (ALIASING esperado)
-  133   // 2000Hz: saltar 133 posiciones por muestra (ALIASING esperado)
+  120,  // 1800Hz: saltar 120 posiciones por muestra
+  167   // 2500Hz: saltar 167 posiciones por muestra (aliasing)
 };
 
-// Divisores para simular frecuencias bajas
+// Divisores para simular frecuencias (no necesarios para estas frecuencias altas)
 uint16_t contador_div = 0;
-const uint16_t divisores_freq[10] = {
-  7,    // 2Hz: dividir por 7 (aproximadamente 2.14Hz)
-  1,    // 300Hz: sin división
-  1,    // 80Hz: sin división
-  1,    // 10Hz: sin división (aproximadamente 7.5Hz)
+const uint16_t divisores_freq[5] = {
   1,    // 500Hz: sin división
   1,    // 900Hz: sin división
   1,    // 1200Hz: sin división
-  1,    // 1500Hz: sin división
   1,    // 1800Hz: sin división
-  1     // 2000Hz: sin división
+  1     // 2500Hz: sin división
 };
 
 /**
@@ -187,13 +167,13 @@ ISR(TIMER1_COMPA_vect) {
 
 /**
  * Cambiar al siguiente estado en el ciclo
- * 18 estados: 12 originales + 6 senoidales para test de aliasing
- * Tri2Hz → Tri10Hz → Tri80Hz → Tri300Hz → Cua2Hz → Cua10Hz → Cua80Hz → Cua300Hz →
- * Sen2Hz → Sen10Hz → Sen80Hz → Sen300Hz → Sen500Hz → Sen900Hz → Sen1200Hz → Sen1500Hz → Sen1800Hz → Sen2000Hz
+ * 9 estados: 5 senoidales + 4 cuadradas (triangulares comentadas por RAM)
+ * Sen500Hz → Sen900Hz → Sen1200Hz → Sen1800Hz → Sen2500Hz → 
+ * Cua900Hz → Cua1200Hz → Cua1800Hz → Cua2500Hz → (repetir)
  */
 void cambiar_estado() {
   estado_actual++;
-  if (estado_actual >= 18) {
+  if (estado_actual >= 9) {  // 9 estados en lugar de 13 (sin triangulares)
     estado_actual = 0;  // Volver al inicio del ciclo
   }
   
@@ -218,27 +198,19 @@ void cambiar_estado() {
 void setup() {
   // Inicializar puerto serie para debug
   Serial.begin(9600);
-  Serial.println("=== Generador Automático de Formas de Onda Avanzado ===");
+  Serial.println("=== Generador de Formas de Onda (Optimizado RAM) ===");
   Serial.println("Arduino Uno - DAC 6 bits (Pines 2-7)");
-  Serial.println("Ciclo de 18 estados, 15s cada uno:");
-  Serial.println("1.  Triangular 2Hz 1V-4V");
-  Serial.println("2.  Triangular 10Hz 0V-5V");
-  Serial.println("3.  Triangular 80Hz 0V-5V");
-  Serial.println("4.  Triangular 300Hz 0V-5V"); 
-  Serial.println("5.  Cuadrada 2Hz 1V-4V");
-  Serial.println("6.  Cuadrada 10Hz 0V-5V");
-  Serial.println("7.  Cuadrada 80Hz 0V-5V");
-  Serial.println("8.  Cuadrada 300Hz 0V-5V");
-  Serial.println("9.  Senoidal 2Hz 1V-4V");
-  Serial.println("10. Senoidal 10Hz 0V-5V");
-  Serial.println("11. Senoidal 80Hz 0V-5V");
-  Serial.println("12. Senoidal 300Hz 0V-5V");
-  Serial.println("13. Senoidal 500Hz 0V-5V (Test Nyquist)");
-  Serial.println("14. Senoidal 900Hz 0V-5V (Test Nyquist)");
-  Serial.println("15. Senoidal 1200Hz 0V-5V (Test Nyquist)");
-  Serial.println("16. Senoidal 1500Hz 0V-5V (Test Nyquist)");
-  Serial.println("17. Senoidal 1800Hz 0V-5V (Test aliasing >1920Hz)");
-  Serial.println("18. Senoidal 2000Hz 0V-5V (Test aliasing >1920Hz)");
+  Serial.println("Ciclo de 9 estados (triangulares desactivadas), 15s cada uno:");
+  Serial.println("1.  Senoidal 500Hz 0V-5V (Test Nyquist)");
+  Serial.println("2.  Senoidal 900Hz 0V-5V (Test Nyquist)");
+  Serial.println("3.  Senoidal 1200Hz 0V-5V (Test Nyquist)");
+  Serial.println("4.  Senoidal 1800Hz 0V-5V (Test Nyquist)");
+  Serial.println("5.  Senoidal 2500Hz 0V-5V (Test aliasing)");
+  Serial.println("6.  Cuadrada 900Hz 0V-5V (Test Nyquist)");
+  Serial.println("7.  Cuadrada 1200Hz 0V-5V (Test Nyquist)");
+  Serial.println("8.  Cuadrada 1800Hz 0V-5V (Test Nyquist)");
+  Serial.println("9.  Cuadrada 2500Hz 0V-5V (Test aliasing)");
+  Serial.println("-- Triangulares desactivadas para ahorrar RAM --");
   Serial.println("");
   
   // Configurar pines del DAC como salida (pines 2-7)
@@ -256,7 +228,7 @@ void setup() {
   
   // Inicializar variables de control
   ultimo_cambio = millis();
-  estado_actual = 0;  // Comenzar con triangular 2Hz 1V-4V
+  estado_actual = 0;  // Comenzar con senoidal 500Hz 0V-5V
   indice_tabla = 0;
   contador_div = 0;
   
@@ -269,7 +241,7 @@ void setup() {
 
 /**
  * Bucle principal
- * Controla el cambio automático de estados cada 30 segundos
+ * Controla el cambio automático de estados cada 15 segundos
  */
 void loop() {
   uint32_t tiempo_actual = millis();

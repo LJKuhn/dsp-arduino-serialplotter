@@ -47,9 +47,9 @@
  */
 
 // Incluir librerías del proyecto
-#include "../DSP/adc.h"           // Control del ADC (mismo que versión estándar)
-#include "../DSP/timer1.h"        // Timer1 para interrupciones precisas
-#include "../DSP/tablas.h"        // Tablas de formas de onda
+#include "adc.h"           // Control del ADC (mismo que versión estándar)
+#include "timer1.h"        // Timer1 para interrupciones precisas
+#include "tablas.h"        // Tablas de formas de onda
 #include "usart_overclock.h"      // ⚡ USART con buffers ampliados
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -58,9 +58,10 @@
 #define FREQ_MUESTREO 7680.0      // ⚡ 7680 Hz (2× velocidad estándar)
 #define BAUDRATE_OVERCLOCK 115200  // ⚡ 115200 bps (3× velocidad estándar)
 
-// Instancias de controladores
-ADCController adc;                 // Controlador del ADC
-Timer1 timer1(FREQ_MUESTREO);      // ⚡ Timer a 7680 Hz para muestreo
+// ========== OBJETOS GLOBALES ==========
+ADCController adc;                  // Controlador del ADC
+USART_Overclock usart_oc;          // USART con buffers ampliados
+Timer1 timer(FREQ_MUESTREO);       // Timer a 7680 Hz
 
 /**
  * Escribe un valor de 8 bits al DAC R2R usando PORTA completo
@@ -136,8 +137,8 @@ void setup() {
    DDRA = 0xFF;  // Todos los pines como salida
    
    // ========== CONFIGURAR TIMER1 @ 7680 Hz ==========
-   timer1.setup();
-   timer1.start();
+   timer.setup();
+   timer.start();
    
    // ========== LED INDICADOR ==========
    pinMode(13, OUTPUT);

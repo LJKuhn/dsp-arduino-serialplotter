@@ -141,11 +141,17 @@ MainWindow::~MainWindow()
 void MainWindow::CreateBuffers() {
     int speed = settings->sampling_rate;
     int max_size = speed * max_time;  // Buffer para max_time segundos de datos
-    size = 0;
     int view_size = 30 * speed;  // Vista inicial de 30 segundos
-    next_time = 0;
 
+    // IMPORTANTE: Destruir buffers existentes primero (con protección mutex)
     DestroyBuffers();
+    
+    // CRÍTICO: Adquirir mutex para crear buffers de forma atómica
+    std::lock_guard<std::mutex> lock(data_mutex);
+    
+    // Resetear estado
+    size = 0;
+    next_time = 0.0;
     
     // Aumentar tamaño de buffers para reducir overhead de lecturas pequeñas
     // Arduino Mega tiene más RAM, podemos usar buffers más grandes
@@ -160,9 +166,30 @@ void MainWindow::CreateBuffers() {
 }
 
 void MainWindow::DestroyBuffers() {
-    delete scrollX;
-    delete scrollY;
-    delete filter_scrollY;
+    // CRÍTICO: Adquirir mutex para evitar que Draw() acceda a buffers mientras se destruyen
+    std::lock_guard<std::mutex> lock(data_mutex);
+    
+    // Eliminar buffers y asegurar que los punteros sean nullptr
+    if (scrollX) {
+        delete scrollX;
+        scrollX = nullptr;
+    }
+    if (scrollY) {
+        delete scrollY;
+        scrollY = nullptr;
+    }
+    if (filter_scrollY) {
+        delete filter_scrollY;
+        filter_scrollY = nullptr;
+    }
+    if (fft) {
+        delete fft;
+        fft = nullptr;
+    }
+    
+    // Resetear contadores
+    size = 0;
+    next_time = 0.0;
 }
 
 double MainWindow::TransformSample(uint8_t v) {
@@ -404,8 +431,12 @@ void MainWindow::DrawSidebar()
         if (frozen && !frozen_dataX.empty()) {
             elapsed = frozen_dataX.back();
         }
-        else if (!frozen && scrollX && scrollX->count() > 0) {
-            elapsed = scrollX->back();
+        else if (!frozen) {
+            // VALIDACIÓN CRÍTICA: Proteger acceso a scrollX
+            std::lock_guard<std::mutex> lock(data_mutex);
+            if (scrollX && scrollX->count() > 0) {
+                elapsed = scrollX->back();
+            }
         }
     }
     ImGui::Text("Tiempo: %.1fs", elapsed);
@@ -460,6 +491,19 @@ void MainWindow::Stop() {
     
     // Cerrar puerto serial
     serial.close();
+    
+    // IMPORTANTE: Limpiar datos congelados para que reconexión empiece limpio
+    if (frozen) {
+        frozen = false;
+        frozen_dataX.clear();
+        frozen_dataY.clear();
+        frozen_dataY_filtered.clear();
+        frozen_size = 0;
+    }
+    
+    // CRÍTICO: Resetear estado de ImPlot para evitar que use punteros viejos
+    // Esto limpia todos los comandos de dibujo pendientes del frame anterior
+    ImPlot::BustItemCache();
 }
 
 void MainWindow::SelectFilter(Filter filter) {
@@ -616,18 +660,22 @@ void MainWindow::Draw()
     static double elapsed_time = 0;
 
     // Actualizar tiempo transcurrido y límites de zoom automático solo en modo en vivo
-    if (started && scrollX && scrollX->count() > 0 && !frozen) {
-        elapsed_time = scrollX->back();
+    // VALIDACIÓN CRÍTICA: Verificar que scrollX existe y tiene datos ANTES de acceder
+    if (started && !frozen) {
+        std::lock_guard<std::mutex> lock(data_mutex);
+        if (scrollX && scrollX->count() > 0) {
+            elapsed_time = scrollX->back();
 
-        // Auto-scroll: mantener ventana visible de max_time_visible segundos
-        if (elapsed_time > max_time_visible) {
-            right_limit = elapsed_time;
-            left_limit = elapsed_time - max_time_visible;
-        }
-        else {
-            // Al inicio, cuando aún no hay suficientes datos
-            left_limit = 0;
-            right_limit = max_time_visible;
+            // Auto-scroll: mantener ventana visible de max_time_visible segundos
+            if (elapsed_time > max_time_visible) {
+                right_limit = elapsed_time;
+                left_limit = elapsed_time - max_time_visible;
+            }
+            else {
+                // Al inicio, cuando aún no hay suficientes datos
+                left_limit = 0;
+                right_limit = max_time_visible;
+            }
         }
     }
 
@@ -653,12 +701,26 @@ void MainWindow::Draw()
         dataY_filtered = frozen_dataY_filtered.data();
         current_draw_size = frozen_size / settings->stride;
     }
-    else {
+    else if (!frozen && scrollX && scrollY && filter_scrollY) {
         // Modo en vivo: usar buffers circulares actuales (actualizados por SerialWorker)
-        dataX = scrollX ? scrollX->data() : nullptr;
-        dataY = scrollY ? scrollY->data() : nullptr;
-        dataY_filtered = filter_scrollY ? filter_scrollY->data() : nullptr;
-        current_draw_size = size / settings->stride;
+        // VALIDACIÓN CRÍTICA: Proteger acceso con mutex y verificar existencia
+        std::lock_guard<std::mutex> lock(data_mutex);
+        
+        // IMPORTANTE: Solo usar buffers si TODOS existen y tienen tamaño válido
+        if (scrollX && scrollY && filter_scrollY && size > 0) {
+            dataX = scrollX->data();
+            dataY = scrollY->data();
+            dataY_filtered = filter_scrollY->data();
+            current_draw_size = size / settings->stride;
+        }
+        else {
+            // Buffers no listos: forzar current_draw_size = 0 para que ImPlot no dibuje
+            current_draw_size = 0;
+        }
+    }
+    else {
+        // Estado inválido: ningún dato disponible
+        current_draw_size = 0;
     }
 
     // Dibujar panel lateral con controles
@@ -830,10 +892,14 @@ void MainWindow::Draw()
             ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0, INFINITY);
 
             // Dibujar el espectro FFT
-            fft->Plot(settings->sampling_rate);
+            // VALIDACIÓN CRÍTICA: Solo dibujar si FFT existe
+            if (fft) {
+                fft->Plot(settings->sampling_rate);
+            }
             
             // Marcador visual de la frecuencia dominante (línea vertical roja)
-            if (show_dominant_frequency_marker && scrollY && scrollY->count() > 0) {
+            // VALIDACIÓN CRÍTICA: Verificar FFT antes de acceder
+            if (fft && show_dominant_frequency_marker && scrollY && scrollY->count() > 0) {
                 double dominant_freq = fft->Frequency(settings->sampling_rate);
                 if (dominant_freq > 0) {
                     // Obtener los límites actuales del gráfico para la altura de la línea
@@ -885,7 +951,8 @@ void MainWindow::Draw()
         ImGui::Checkbox("Mostrar freq. dominante", &show_dominant_frequency_marker);
 
             // === INFORMACIÓN DE ANÁLISIS ESPECTRAL ===
-            if (scrollY && scrollY->count() > 0) {
+            // VALIDACIÓN CRÍTICA: Verificar que FFT y buffers existen antes de acceder
+            if (fft && scrollY && scrollY->count() > 0) {
                 ImGui::Spacing();
                 ImGui::Separator();
                 
