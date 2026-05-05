@@ -469,14 +469,14 @@ void MainWindow::SelectFilter(Filter filter) {
     switch (selected_filter)
     {
         case Filter::LowPass:
-            // Pasa bajos: frecuencia de corte entre 1 Hz y Nyquist/2
+            // Pasa bajos: rango completo de 1 Hz hasta Nyquist
             min_cutoff_frequency = 1;
-            max_cutoff_frequency = settings->sampling_rate / 4;
+            max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
             break;
         case Filter::HighPass:
-            // Pasa altos: frecuencia de corte entre Nyquist/2 y casi Nyquist
-            min_cutoff_frequency = settings->sampling_rate / 4;
-            max_cutoff_frequency = settings->sampling_rate / 2 - 1;
+            // Pasa altos: rango completo de 1 Hz hasta Nyquist
+            min_cutoff_frequency = 1;
+            max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
             break;
         case Filter::None:
             break;
