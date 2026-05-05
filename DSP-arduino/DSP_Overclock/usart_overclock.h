@@ -205,5 +205,5 @@ public:
     }
 };
 
-// Instancia global OVERCLOCK
-USART_Overclock usart_oc;
+// Declaración externa - la instancia se crea en el archivo .ino principal
+extern USART_Overclock usart_oc;
