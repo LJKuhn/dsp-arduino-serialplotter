@@ -27,6 +27,7 @@
 #include <implot.h>
 #include <Iir.h>
 #include <thread>
+#include <algorithm>  // Para std::min
 
 #include "MainWindow.h"
 
@@ -500,42 +501,74 @@ void MainWindow::Stop() {
         frozen_dataY_filtered.clear();
         frozen_size = 0;
     }
-    
-    // CRÍTICO: Resetear estado de ImPlot para evitar que use punteros viejos
-    // Esto limpia todos los comandos de dibujo pendientes del frame anterior
-    ImPlot::BustItemCache();
 }
 
 void MainWindow::SelectFilter(Filter filter) {
     selected_filter = filter;
     
+    // Calcular frecuencia de Nyquist (máxima frecuencia teórica = fs/2)
+    int nyquist = settings->sampling_rate / 2;
+    
     // Ajustar rango de frecuencia de corte según el tipo de filtro
+    // IMPORTANTE: El rango máximo debe ser menor que Nyquist para evitar excepciones
     switch (selected_filter)
     {
         case Filter::LowPass:
-            // Pasa bajos: rango completo de 1 Hz hasta Nyquist
             min_cutoff_frequency = 1;
-            max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
+            // Limitar a 2000 Hz o Nyquist-10 Hz (lo que sea menor)
+            // Usar (std::min) con paréntesis para evitar conflicto con macro min() de Windows
+            max_cutoff_frequency = (std::min)(2000, nyquist - 10);
             break;
         case Filter::HighPass:
-            // Pasa altos: rango completo de 1 Hz hasta Nyquist
             min_cutoff_frequency = 1;
-            max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
+            // Limitar a 2000 Hz o Nyquist-10 Hz (lo que sea menor)
+            // Usar (std::min) con paréntesis para evitar conflicto con macro min() de Windows
+            max_cutoff_frequency = (std::min)(2000, nyquist - 10);
             break;
         case Filter::None:
             break;
     }
+    
+    // VALIDACIÓN: Asegurar que la frecuencia de corte actual esté dentro del rango válido
+    if (selected_filter != Filter::None) {
+        int filter_idx = (int)selected_filter;
+        if (cutoff_frequency[filter_idx] > max_cutoff_frequency) {
+            cutoff_frequency[filter_idx] = max_cutoff_frequency;
+        }
+        if (cutoff_frequency[filter_idx] < min_cutoff_frequency) {
+            cutoff_frequency[filter_idx] = min_cutoff_frequency;
+        }
+    }
 }
 
 void MainWindow::SetupFilter() {
+    // Calcular frecuencia de Nyquist
+    int nyquist = settings->sampling_rate / 2;
+    
     switch (selected_filter)
     {
         case Filter::LowPass:
+            // VALIDACIÓN: Asegurar que la frecuencia de corte sea válida
+            if (cutoff_frequency[1] >= nyquist) {
+                cutoff_frequency[1] = nyquist - 10;  // Seguridad: dejar margen de 10 Hz
+            }
+            if (cutoff_frequency[1] < 1) {
+                cutoff_frequency[1] = 1;
+            }
             lowpass_filter.setup(settings->sampling_rate, cutoff_frequency[1]);
             break;
+            
         case Filter::HighPass:
+            // VALIDACIÓN: Asegurar que la frecuencia de corte sea válida
+            if (cutoff_frequency[2] >= nyquist) {
+                cutoff_frequency[2] = nyquist - 10;  // Seguridad: dejar margen de 10 Hz
+            }
+            if (cutoff_frequency[2] < 1) {
+                cutoff_frequency[2] = 1;
+            }
             highpass_filter.setup(settings->sampling_rate, cutoff_frequency[2]);
             break;
+            
         case Filter::None:
             break;
     }
@@ -733,7 +766,7 @@ void MainWindow::Draw()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
     ImGui::Begin("Ventana principal", &open,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar |
-                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
+                 ImGuiWindowFlags_NoBringToFrontOnFocus);  // QUITAMOS NoScrollbar para permitir scroll
     ImGui::PopStyleVar(2);
 
     auto win_pos = ImGui::GetWindowPos();
@@ -977,11 +1010,28 @@ void MainWindow::Draw()
                 ImGui::Text("ARMÓNICAS DETECTADAS:");
                 ImGui::Spacing();
                 
-                // Detectar las 5 primeras armónicas
-                auto harmonics = fft->FindHarmonics(settings->sampling_rate, 5);
+                // Detectar las 10 primeras armónicas
+                auto harmonics = fft->FindHarmonics(settings->sampling_rate, 10);
                 
                 // Mostrar tabla con formato estructurado
                 if (!harmonics.empty()) {
+                    // NOTA: Mostrar advertencia si solo hay 1 armónica
+                    if (harmonics.size() == 1) {
+                        double fundamental = harmonics[0].frequency;
+                        double nyquist = settings->sampling_rate / 2.0;
+                        
+                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.0f, 1.0f), 
+                            "ADVERTENCIA: Solo se detecta la fundamental (%.0f Hz)", fundamental);
+                        ImGui::Text("La 2da armonica (%.0f Hz) excede Nyquist (%.0f Hz)", 
+                            fundamental * 2, nyquist);
+                        ImGui::Text("Solucion: Aumenta la frecuencia de muestreo para detectar armonicas");
+                        ImGui::Spacing();
+                        ImGui::Separator();
+                    }
+                    
+                    // Crear región scrollable para la tabla de armónicas (altura fija de 200 píxeles)
+                    ImGui::BeginChild("HarmonicsTable", ImVec2(0, 200), true, ImGuiWindowFlags_HorizontalScrollbar);
+                    
                     // Configurar tabla de 3 columnas
                     ImGui::Columns(3, "harmonics_table");
                     ImGui::Separator();
@@ -994,7 +1044,7 @@ void MainWindow::Draw()
                     
                     // Datos de cada armónica detectada
                     for (size_t i = 0; i < harmonics.size(); i++) {
-                        // Columna 1: Número de armónica (1ª, 2ª, 3ª)
+                        // Columna 1: Número de armónica (1ª, 2ª, 3ª, etc.)
                         ImGui::Text("%dª", static_cast<int>(i + 1)); 
                         ImGui::NextColumn();
                         
@@ -1011,6 +1061,9 @@ void MainWindow::Draw()
                     
                     // Volver a 1 columna
                     ImGui::Columns(1);
+                    
+                    ImGui::EndChild();  // Fin de la región scrollable
+                    
                     ImGui::Separator();
                     
                     // OPCIONAL: Calcular y mostrar THD (Total Harmonic Distortion)
