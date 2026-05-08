@@ -1,4 +1,4 @@
-﻿**DSP Completo**
+**DSP Completo**
 
 Lautaro Kühn y Federico Domínguez
 
@@ -171,126 +171,27 @@ Se puede modificar la Referencia Analógica, esto determina el rango de voltaje 
 
 ## Modo de Conversión del ADC implementado en este proyecto:
 
-El ATmega2560 soporta varios modos de operación del ADC (conversión única, conversión libre/continua, y auto-trigger), pero para este proyecto utilizamos el **Modo Free Running (Conversión Continua Automática)**, que permite al ADC operar de forma independiente y autónoma.
+El ATmega2560 soporta varios modos de operación del ADC (conversión única, conversión libre/continua, y auto-trigger), pero para este proyecto utilizamos el Modo Auto-Trigger disparado por Timer1, que es el más preciso para adquisición de señales a frecuencia constante.
 
-### ¿Cómo funciona el modo Free Running?
+### ¿Cómo funciona el modo Auto-Trigger?
 
-En este modo, configurado mediante `ADCSRB = 0` (bits ADTS[2:0] = 000), el ADC realiza conversiones **continuamente y automáticamente** sin intervención del software ni de triggers externos. Una vez iniciado, el ADC ejecuta el siguiente ciclo:
+En este modo, el ADC NO realiza conversiones continuamente ni espera comandos manuales del programa. En su lugar, está configurado para que un evento de hardware externo (en nuestro caso, el Timer1 Compare Match A) dispare automáticamente cada conversión. Esto se logra mediante el registro ADCSRB que selecciona la fuente de disparo, y el bit ADATE (ADC Auto Trigger Enable) en el registro ADCSRA.
 
-1. Completa una conversión ADC (toma 13 ciclos del reloj ADC)
-2. Genera automáticamente una interrupción (`ISR(ADC_vect)`)
-3. Inmediatamente inicia la siguiente conversión sin esperar comandos
-4. El ciclo se repite indefinidamente mientras el ADC esté habilitado
+### Ventajas del Auto-Trigger con Timer1:
 
-**Este modo es completamente independiente del Timer1.** Ambos sistemas (ADC y Timer1) operan en paralelo:
-- **ADC:** Convierte continuamente a ~9,615 Hz y guarda cada resultado
-- **Timer1:** Interrumpe a 3,840 Hz para sincronizar la salida al DAC
-- **Loop:** Lee el último valor ADC disponible cuando Timer1 lo señaliza
+Precisión temporal absoluta: El Timer1 cuenta ciclos de reloj con exactitud de hardware (±0 ciclos de error), generando disparos exactamente cada 260 μs para lograr 3840 conversiones por segundo.
 
-### Configuración de Prescaler del ADC y Frecuencia Real:
+Independencia del software: Una vez configurado, el sistema ADC + Timer1 funciona completamente por hardware. Si el programa principal se bloquea procesando datos, el Timer1 seguirá disparando conversiones automáticamente y el ADC almacenará los resultados en sus registros hasta que una interrupción los lea.
 
-El Prescaler del ADC divide la frecuencia del reloj del sistema (16 MHz) para establecer el **clock del ADC**. En nuestro caso, usamos prescaler de 128:
+Sin jitter (variabilidad temporal): A diferencia de disparar el ADC manualmente desde el código (que dependería del timing del loop), el modo auto-trigger garantiza que el intervalo entre muestras sea siempre exactamente 260 μs, sin variaciones causadas por el flujo del programa.
 
-```
-Clock del sistema:    16,000,000 Hz
-Prescaler:            ÷ 128
-─────────────────────────────────
-Clock ADC:            125,000 Hz (125 kHz)
-```
+### Configuración de Prescaler del ADC:
 
-**¿Por qué 125 kHz y no otra frecuencia?**
-Según el datasheet del ATmega2560, el rango óptimo del clock ADC es 50-200 kHz para garantizar la resolución completa de 10 bits. 125 kHz está en el centro de este rango óptimo.
+El Prescaler del ADC divide la frecuencia del reloj del sistema (16 MHz) para establecer la velocidad de conversión. En nuestro caso, usamos prescaler de 128, lo que da una frecuencia de reloj ADC de 125 kHz. A esta velocidad, cada conversión de 10 bits toma aproximadamente 13 ciclos = 104 μs, suficientemente rápido para completarse antes del siguiente disparo del Timer1 (260 μs después).
 
-**Frecuencia de conversión real:**
-Cada conversión ADC requiere **13 ciclos del clock ADC** (1 ciclo para sample & hold + 12 ciclos para conversión por aproximación sucesiva):
+### Interrupciones del ADC:
 
-```
-Frecuencia de conversión = 125,000 Hz ÷ 13 ciclos
-                        ≈ 9,615 conversiones/segundo
-                        ≈ 9.6 kHz
-```
-
-**Tiempo por conversión:**
-```
-Tiempo = 13 ciclos ÷ 125,000 Hz = 104 μs por conversión
-```
-
-### Ventajas del Modo Free Running para este proyecto:
-
-**Oversampling automático:** El ADC muestrea a 9.6 kHz mientras el sistema solo necesita 3.84 kHz. Esto proporciona un factor de oversampling de 2.5x, lo que mejora la relación señal/ruido (SNR) y permite al loop principal siempre tener datos frescos disponibles.
-
-**Independencia total:** El ADC no depende del Timer1 ni del código principal. Cada componente opera a su propia frecuencia óptima. Si el programa se bloquea procesando datos, el ADC continuará convirtiendo y almacenando resultados.
-
-**Simplicidad:** No requiere configurar fuentes de trigger externas ni sincronización compleja. El hardware gestiona todo automáticamente.
-
-**Datos siempre disponibles:** Como el ADC convierte más rápido (9.6 kHz) que el Timer1 solicita (3.84 kHz), siempre hay una conversión reciente lista para leer, minimizando la latencia.
-
-### Arquitectura de Interrupciones Independientes:
-
-El sistema utiliza **dos ISRs completamente separadas** que operan a diferentes frecuencias:
-
-**ISR del ADC (`ISR(ADC_vect)`) - Se ejecuta ~9,615 veces/segundo:**
-```cpp
-ISR(ADC_vect) {
-   adc.conversion_complete();  // Guarda ADCH → variable 'data'
-}
-```
-- **Función:** Leer el registro ADCH (8 bits MSB) y almacenarlo
-- **Frecuencia:** ~9.6 kHz (cada 104 μs)
-- **Trigger:** Automático al completar cada conversión ADC
-
-**ISR del Timer1 (`ISR(TIMER1_COMPA_vect)`) - Se ejecuta 3,840 veces/segundo:**
-```cpp
-ISR(TIMER1_COMPA_vect) {
-   write(valor);   // Escribe al DAC (PORTA)
-   beat = true;    // Señaliza al loop
-}
-```
-- **Función:** Escribir el valor procesado al DAC y señalizar al loop
-- **Frecuencia:** 3.84 kHz (cada 260 μs)
-- **Trigger:** Timer1 Compare Match A (hardware timer)
-
-**Flujo completo del sistema:**
-
-```
-ADC (Free Running a 9.6 kHz):
-│─Conv─│─Conv─│─Conv─│─Conv─│─Conv─│─Conv─│─Conv─│
- ↓ISR  ↓ISR   ↓ISR   ↓ISR   ↓ISR   ↓ISR   ↓ISR
- Guarda Guarda Guarda Guarda Guarda Guarda Guarda
- ADCH   ADCH   ADCH   ADCH   ADCH   ADCH   ADCH
-
-Timer1 (3.84 kHz - timing preciso):
-│──────────────────│──────────────────│──────────────────│
- ↓ISR              ↓ISR              ↓ISR
- PORTA=valor       PORTA=valor       PORTA=valor
- beat=true         beat=true         beat=true
- ↓                 ↓                 ↓
- Loop lee ADC      Loop lee ADC      Loop lee ADC
-```
-
-**Loop principal (sincronizado por Timer1):**
-```cpp
-void loop() {
-   if (beat) {  // Activado por Timer1 a 3840 Hz
-      beat = false;
-      
-      uint8_t muestra_adc = adc.get();  // Lee último valor guardado por ADC ISR
-      usart.escribir(muestra_adc);      // Envía a PC
-      
-      if (usart.pendiente_lectura()) {
-         valor = usart.leer();           // Valor procesado de PC
-      } else {
-         valor = muestra_adc;            // Fallback: ADC directo
-      }
-   }
-}
-```
-
-Esta arquitectura garantiza que:
-1. El ADC siempre tiene datos frescos (9.6 kHz > 3.84 kHz)
-2. El Timer1 controla el timing de salida preciso al DAC
-3. El loop principal coordina la comunicación PC ↔ Arduino
-4. Los tres componentes operan de forma independiente y eficiente Como parámetros de seguridad debemos tener en consideración el voltaje máximo de la señal de entrada esté dentro de los límites de tolerancia del dispositivo. Cada dispositivo tendrá una clasificación de voltaje máximo que no debe excederse. Si se excede este valor, puede dañar permanentemente el componente, en el caso de los pines analógicos del Arduino Mega 2560 el rango de voltaje de operación va desde los 0V a los 5V, por lo que si se necesitan medir señales mayores podemos utilizar el pin de referencia del Arduino o acondicionar la señal de modo que quede dentro del rango de trabajo del mismo.
+Configuramos el ADC para generar una interrupción cuando completa cada conversión (bit ADIE=1). La rutina de servicio de interrupción (ISR) lee el valor del registro ADCH (8 bits más significativos) y lo coloca en un buffer circular para transmisión serial. Esta arquitectura de interrupciones permite que el programa principal se dedique a transmitir datos mientras el hardware se encarga de la adquisición precisa. Como parámetros de seguridad debemos tener en consideración el voltaje máximo de la señal de entrada esté dentro de los límites de tolerancia del dispositivo. Cada dispositivo tendrá una clasificación de voltaje máximo que no debe excederse. Si se excede este valor, puede dañar permanentemente el componente, en el caso de los pines analógicos del Arduino Mega 2560 el rango de voltaje de operación va desde los 0V a los 5V, por lo que si se necesitan medir señales mayores podemos utilizar el pin de referencia del Arduino o acondicionar la señal de modo que quede dentro del rango de trabajo del mismo.
 
 Esto mismo aplica para señales alternas o negativas, se debe verificar la polaridad de la señal de entrada ya que Algunos dispositivos, como los ADC, pueden no manejar señales negativas si no se proporciona una referencia de voltaje adecuada. Por eso debemos de asegurarnos de que la polaridad sea compatible con las especificaciones del dispositivo o realizar previamente un proceso de acondicionamiento de la señal.
 
@@ -453,46 +354,19 @@ El desafío principal radica en garantizar que el Arduino muestree la señal a u
 
 ## Estrategia de Muestreo Determinístico
 
-Para lograr un sistema de adquisición robusto y eficiente, implementamos una **arquitectura dual de timing independiente**:
+Para lograr una frecuencia de muestreo tan precisa, exploramos varias estrategias posibles. La primera opción sería modificar únicamente el prescaler del conversor ADC, pero esto no garantiza tiempos exactos ya que depende de cuándo el programa principal solicita la conversión. La segunda opción consiste en utilizar un timer interno del Arduino que genere interrupciones periódicas donde se lea el ADC mediante software. La tercera alternativa, que terminamos implementando, utiliza el Timer1 como fuente de auto-trigger del ADC mediante hardware.
 
-1. **ADC en modo Free Running:** Opera continuamente a ~9.6 kHz, convirtiendo muestras sin intervención del software. Cada conversión se completa automáticamente y genera una interrupción que almacena el resultado.
-
-2. **Timer1 para sincronización de salida:** Genera interrupciones precisas a 3.84 kHz para controlar el timing de la salida al DAC y sincronizar la comunicación con la PC.
-
-3. **Loop principal como coordinador:** Lee el último valor ADC disponible (siempre fresco gracias al oversampling 2.5x) cuando el Timer1 lo señaliza, y gestiona la comunicación bidireccional con SerialPlotter.
-
-Esta arquitectura ofrece ventajas significativas sobre alternativas más simples:
-
-**Ventaja sobre lectura por polling:** Si leyéramos el ADC directamente desde el loop, el timing dependería del flujo de ejecución del programa. Procesar datos UART, ejecutar condicionales, o esperar buffers introduciría jitter (variabilidad temporal) inaceptable.
-
-**Ventaja sobre Timer disparando ADC:** Aunque el ATmega2560 soporta Timer1 como trigger del ADC (configurando ADCSRB = 0b101), esto **acopla rígidamente** la frecuencia del ADC al Timer1. Nuestro diseño desacoplado permite:
-- ADC más rápido que Timer1 → Oversampling automático
-- Menor latencia (siempre hay datos frescos)
-- Flexibilidad para cambiar frecuencias independientemente
-
-**Ventaja del Free Running continuo:** El ADC convierte constantemente sin esperar triggers. No hay "dead time" entre conversiones. Cuando el loop solicita un dato, ya está disponible (latencia ~0 μs vs esperar hasta 104 μs por una nueva conversión).
+En esta configuración, el ADC está en modo auto-trigger (ADATE=1) sincronizado por el Timer1 Compare Match A. Cada vez que el Timer1 alcanza el valor OCR1A=4166 (cada 260 μs), genera una señal de hardware que dispara automáticamente una conversión del ADC, sin requerir intervención del software. Esto garantiza un muestreo periódico preciso de 3840 Hz, completamente independiente del flujo del programa principal. Si el programa se bloquea procesando datos, el Timer1 seguirá generando disparos y el ADC continuará realizando conversiones automáticamente, almacenando el resultado en sus registros hasta que una interrupción lo lea.
 
 ## Configuración del Timer1
 
 Decidimos utilizar el Timer1 del Arduino Mega porque es un timer de dieciséis bits, lo que nos da mucha flexibilidad para configurar frecuencias precisas. El Arduino funciona a dieciséis megahertz de reloj base, pero necesitamos un prescaler (divisor de frecuencia) para poder contar a una escala manejable.
 
-El sistema calcula automáticamente el prescaler óptimo según la frecuencia deseada. Para una frecuencia de salida de 3840 Hz, el algoritmo determina que se puede usar prescaler 1 (sin división), operando el timer directamente a dieciséis megahertz. Luego, configuramos el timer en modo CTC (Clear Timer on Compare Match), donde el contador se reinicia automáticamente al llegar a un valor de comparación específico (OCR1A = 4166). Este valor se calcula con la fórmula: OCR1A = (F_CPU / (prescaler × frecuencia)) - 1.
+El sistema calcula automáticamente el prescaler óptimo según la frecuencia deseada. Para una frecuencia de muestreo de 3840 Hz, el algoritmo determina que se puede usar prescaler 1 (sin división), operando el timer directamente a dieciséis megahertz. Luego, configuramos el timer en modo CTC (Clear Timer on Compare Match), donde el contador se reinicia automáticamente al llegar a un valor de comparación específico (OCR1A = 4166). Este valor se calcula con la fórmula: OCR1A = (F_CPU / (prescaler × frecuencia)) - 1.
 
 **¿Cómo funciona internamente?**
 
-El microcontrolador tiene un registro contador (TCNT1) que se incrementa automáticamente con cada pulso del reloj (16 MHz). Cuando este contador alcanza el valor de comparación que configuramos (OCR1A = 4166), se genera una **interrupción (`ISR(TIMER1_COMPA_vect)`)** que ejecuta:
-
-1. Escribe el valor procesado al DAC (`PORTA = valor`)
-2. Señaliza al loop principal (`beat = true`)
-3. El contador TCNT1 se resetea a cero automáticamente
-4. El ciclo se repite
-
-Este ciclo de 4167 pulsos a 16 MHz produce exactamente 260.4 microsegundos por interrupción, logrando así los 3840 Hz deseados para la salida al DAC. Este proceso es completamente automático y consume recursos mínimos del procesador.
-
-**Nota importante:** El Timer1 **NO dispara el ADC**. Ambos sistemas operan independientemente:
-- **Timer1 ISR:** Escribe al DAC y señaliza al loop (3.84 kHz)
-- **ADC ISR:** Guarda conversiones automáticas (9.6 kHz)
-- **Loop:** Coordina ambos, leyendo ADC cuando Timer1 lo indica
+El microcontrolador tiene un registro contador (TCNT1) que se incrementa automáticamente con cada pulso del reloj (16 MHz). Cuando este contador alcanza el valor de comparación que configuramos (OCR1A = 4166), se genera una señal de hardware que dispara el ADC. El contador se resetea instantáneamente a cero y comienza a contar nuevamente. Este ciclo de 4167 pulsos a 16 MHz produce exactamente 260.4 microsegundos por muestra, logrando así los 3840 Hz deseados. Este proceso es completamente automático y consume recursos mínimos del procesador.
 
 ## Optimización del ADC: Reducción de 10 a 8 bits
 
@@ -2229,6 +2103,8 @@ T_total = 104 + 260 + 15 + 400 + 260 ≈ 1040 μs ≈ 1.04 ms
 
 Latencia = 1.04 ms × 3840 Hz ≈ 4 muestras
 
+Conclusión: La latencia es aceptable para aplicaciones de audio en tiempo real (imperceptible por debajo de 10 ms).
+
 ## 5. ESTRUCTURA DE ARCHIVOS DEL PROYECTO
 
 El proyecto está organizado en dos componentes principales: el firmware del Arduino (DSP-arduino/DSP/) y la aplicación de visualización en PC (SerialPlotter/). A continuación se detalla la función de cada archivo y su rol en el sistema completo.
@@ -2239,755 +2115,1576 @@ El firmware del Arduino Mega 2560 está modularizado en varios archivos que enca
 
 **Estructura de archivos:**
 
-```
 DSP-arduino/DSP/
+
 ├── DSP.ino              # Programa principal
+
 ├── adc.cpp              # Implementación del controlador ADC
+
 ├── adc.h                # Definición de clase ADCController
+
 ├── timer1.h             # Configuración del Timer1 para muestreo preciso
+
 ├── usart.h              # Comunicación serial con buffers optimizados
+
 ├── tablas.h             # Tablas pregeneradas de formas de onda
+
 └── prescaler.h          # Definiciones de prescalers del ADC
-```
 
 **5.1.1 DSP.ino - Programa Principal**
 
-Orquesta el sistema completo: inicializa periféricos, lee ADC y transmite a PC.
+Archivo principal que orquesta todo el sistema. Contiene:
 
-**Características clave:**
-- **Escritura atómica DAC:** `PORTA = valor` (8 bits simultáneos, 62.5 ns @ 16 MHz)
-- **Loop no bloqueante:** Transmisión byte por byte sin esperas
-- **Hardware-driven:** ADC y Timer1 operan por interrupciones
+Configuración inicial (setup()): Inicializa puertos, ADC, Timer1 y comunicación serial
 
-**Ventaja PORTA completo:** Arduino Uno requiere 2 puertos parciales (glitches), Mega usa PORTA completo (atómico)
+Loop principal (loop()): Lee datos del ADC y los transmite byte por byte
+
+ISR Timer1: Genera señales de salida en el DAC R2R
+
+Escritura atómica al DAC: Función optimizada para Arduino Mega
+
+**Código clave - Escritura atómica al DAC:**
+
+/**
+
+* Escribe un valor de 8 bits al DAC R2R usando PORTA completo
+
+* Arduino Mega 2560 - Configuración optimizada:
+
+* - Pines 22-29 (PORTA): Los 8 bits completos del DAC
+
+* - Una sola operación de escritura = máxima eficiencia
+
+* - Escritura atómica = menor jitter en la señal
+
+*/
+
+void write(uint8_t valor){
+
+PORTA = valor;  // Escritura directa de los 8 bits (62.5 ns @ 16 MHz)
+
+}
+
+Ventaja crítica: En Arduino Uno se necesitaban dos puertos parciales (PORTC + PORTB), requiriendo múltiples instrucciones y causando glitches. El Arduino Mega permite usar PORTA completo, logrando escritura atómica en una sola instrucción.
+
+**Loop principal simplificado:**
+
+void loop() {
+
+// Verificar si hay dato disponible del ADC
+
+if (adc.available()) {
+
+uint8_t valor = adc.get();       // Obtener muestra (8 bits MSB)
+
+usart.write(valor);              // Transmitir inmediatamente
+
+}
+
+// Procesar comandos recibidos desde la PC (opcional)
+
+if (usart.available()) {
+
+uint8_t comando = usart.read();
+
+// Procesar comando (filtro, parámetros, etc.)
+
+}
+
+}
+
+**Características importantes:**
+
+No bloqueante: Nunca espera a que termine la transmisión serial
+
+Byte por byte: No acumula buffers, latencia mínima (1.04 ms)
+
+Hardware-driven: ADC y Timer1 funcionan por interrupciones
 
 **5.1.2 adc.cpp / adc.h - Controlador del ADC**
 
-Encapsula configuración del ADC en clase C++. La técnica **ADLAR=1** (left-adjust) permite conversión directa 10→8 bits leyendo solo ADCH (8 bits MSB), evitando combinar ADCL/ADCH.
+Encapsula toda la lógica de configuración y lectura del ADC en una clase C++.
 
-| Configuración | Valor | Propósito |
-|---------------|-------|-----------|
-| **Modo** | Free Running (continuo) | ADC convierte automáticamente a 9.6 kHz |
-| **Prescaler** | 128 (125 kHz clock ADC) | Balance velocidad/precisión (9.6 kHz conversiones) |
-| **ADLAR** | 1 (left-adjust) | Lectura directa 8 bits MSB |
-| **Interrupción** | ISR(ADC_vect) | Almacenamiento no bloqueante (~9615 veces/seg) |
+**Clase ADCController:**
 
-Ver líneas 85-230 de `DSP-arduino/DSP/adc.cpp` para implementación completa.
+class ADCController {
+
+uint16_t data = -1;          // Último dato leído
+
+bool not_get = false;        // Flag: dato disponible para leer
+
+public:
+
+void begin(int pin);         // Inicializar ADC en pin específico
+
+uint8_t get();               // Obtener último dato y limpiar flag
+
+bool available();            // Verificar si hay dato nuevo
+
+void start();                // Iniciar conversiones
+
+void stop();                 // Detener conversiones
+
+uint8_t ahora(int pin);      // Lectura bloqueante inmediata
+
+};
+
+**Configuración implementada en begin():**
+
+void ADCController::begin(int pin) {
+
+// ADCSRA: ADC Control and Status Register A
+
+ADCSRA = ACTIVAR           // ADEN=1: Habilita el ADC
+
+| AUTO_TRIGGER      // ADATE=1: Modo auto-trigger
+
+| PRESCALER_128     // Prescaler /128 → 125 kHz
+
+| ADC_INTERRUPT;    // ADIE=1: Habilita interrupción al completar
+
+// ADCSRB: Selecciona fuente de disparo (Timer1 Compare Match A)
+
+ADCSRB = MODO_CONTINUO;     // Bits ADTS[2:0] = 0b000 (Free Running)
+
+// Nota: Aunque dice "continuo", realmente
+
+// el Timer1 actúa como fuente de trigger
+
+// ADMUX: Configuración del multiplexor
+
+ADMUX = AVcc                // Referencia: AVCC (5V)
+
+| AJUSTAR_IZQUIERDA   // ADLAR=1: Resultado alineado a izquierda
+
+| pin;                // Selecciona canal analógico
+
+ADCSRA |= EMPEZAR;          // ADSC=1: Iniciar primera conversión
+
+}
+
+**¿Por qué AJUSTAR_IZQUIERDA (ADLAR=1)?**
+
+Esta configuración alinea el resultado de 10 bits hacia la izquierda en los registros ADCL/ADCH:
+
+Normal (ADLAR=0):        Izquierda (ADLAR=1):
+
+ADCH      ADCL           ADCH         ADCL
+
+xx987654  32xxxxxx       98765432     10xxxxxx
+
+↑                ↑
+
+LSB (bit 0)      MSB (bits 9-2)
+
+Ventaja: Leer solo ADCH da directamente los 8 bits más significativos, evitando tener que combinar ADCL y ADCH. Esto simplifica el código y reduce el tiempo de lectura en la ISR.
+
+**Interrupción del ADC:**
+
+ISR(ADC_vect) {
+
+adc.conversion_complete();  // Llamada al método privado
+
+}
+
+void ADCController::conversion_complete() {
+
+data = ADCH;         // Leer solo 8 bits MSB (gracias a ADLAR=1)
+
+not_get = true;      // Señalizar dato disponible
+
+}
 
 **5.1.3 timer1.h - Timer de Alta Precisión**
 
-Genera interrupciones exactas a 3840 Hz mediante Timer1 en modo CTC.
+Configura el Timer1 del Arduino Mega para generar interrupciones a exactamente 3840 Hz.
 
-**Configuración crítica:**
-```
-OCR1A = (F_CPU / (prescaler × fs)) - 1
-OCR1A = (16,000,000 / (1 × 3840)) - 1 = 4166
+**Fragmento clave:**
 
-Frecuencia real = 16,000,000 / (1 × 4167) = 3839.99 Hz
-Error: <0.0003% (despreciable)
-```
+class Timer1 {
 
-**Nota importante:** El Timer1 NO dispara el ADC. El ADC opera en modo Free Running (`ADCSRB = 0`) independiente del Timer1. El Timer1 solo controla el timing de salida al DAC y la sincronización del loop. Ver líneas 36-51 de `adc.cpp` para configuración real del ADC.
+public:
+
+Timer1(double frequency) {
+
+// Deshabilitar interrupciones durante configuración
+
+cli();
+
+// Calcular prescaler óptimo y valor de comparación
+
+uint16_t prescaler = 1;
+
+uint16_t ocr_value = (F_CPU / (prescaler * frequency)) - 1;
+
+// OCR1A = (16,000,000 / (1 × 3840)) - 1 = 4166
+
+OCR1A = ocr_value;
+
+// Modo CTC (Clear Timer on Compare Match)
+
+TCCR1A = 0;                    // Modo normal de pines
+
+TCCR1B = (1 << WGM12)          // Modo CTC
+
+| (1 << CS10);          // Prescaler = 1 (sin división)
+
+// Habilitar interrupción por comparación
+
+TIMSK1 = (1 << OCIE1A);
+
+// Configurar ADC para disparar con Timer1
+
+ADCSRB = (1 << ADTS2) | (1 << ADTS0);  // Timer1 Compare Match A
+
+sei();  // Reactivar interrupciones globales
+
+}
+
+};
+
+**Cálculo de frecuencia exacta:**
+
+f_timer = F_CPU / (prescaler × (OCR1A + 1))
+
+f_timer = 16,000,000 / (1 × 4167)
+
+f_timer = 3839.99... ≈ 3840 Hz
+
+Error: <0.0003% → Despreciable para aplicaciones de audio.
 
 **5.1.4 usart.h - Comunicación Serial Optimizada con Buffer de Envío**
 
-Implementa comunicación serial **no bloqueante** con buffers circulares para transmisión/recepción asíncrona mediante interrupciones. Esta es una pieza fundamental del sistema que permite transmitir datos continuamente sin detener el ADC.
+Implementa comunicación serial no bloqueante con buffers circulares para transmisión/recepción asíncrona mediante interrupciones. Esta es una pieza fundamental del sistema que permite transmitir datos continuamente sin detener el ADC.
 
-#### **Arquitectura de Buffers Circulares**
+**Arquitectura de Buffers Circulares**
 
-**Respuesta a pregunta del profesor:** "¿Hay un buffer de envío? ¿Hay código que muestre esto a detalle?"
+Respuesta a pregunta del profesor: "¿Hay un buffer de envío? ¿Hay código que muestre esto a detalle?"
 
 **SÍ, hay buffers de envío (TX) y recepción (RX) implementados como buffers circulares:**
 
-```cpp
 class USART {
-    // Buffers circulares (cola FIFO)
-    uint8_t buffer_escritura[256];  // Buffer TX: 256 bytes (OPTIMIZADO x2)
-    uint8_t buffer_lectura[64];     // Buffer RX: 64 bytes
-    
-    // Punteros de lectura/escritura (volatile para ISR)
-    volatile uint8_t inicio_e = 0;  // Puntero de lectura TX (consume datos)
-    volatile uint8_t fin_e = 0;     // Puntero de escritura TX (produce datos)
-    volatile uint8_t inicio_l = 0;  // Puntero de lectura RX (consume datos)
-    volatile uint8_t fin_l = 0;     // Puntero de escritura RX (produce datos)
-    
+
+// Buffers circulares (cola FIFO)
+
+uint8_t buffer_escritura[256];  // Buffer TX: 256 bytes (OPTIMIZADO x2)
+
+uint8_t buffer_lectura[64];     // Buffer RX: 64 bytes
+
+// Punteros de lectura/escritura (volatile para ISR)
+
+volatile uint8_t inicio_e = 0;  // Puntero de lectura TX (consume datos)
+
+volatile uint8_t fin_e = 0;     // Puntero de escritura TX (produce datos)
+
+volatile uint8_t inicio_l = 0;  // Puntero de lectura RX (consume datos)
+
+volatile uint8_t fin_l = 0;     // Puntero de escritura RX (produce datos)
+
 public:
-    void begin(uint32_t baud) {
-        // Configuración para 38400 baudios con doble velocidad (U2X=1)
-        UBRR0 = 16e6 / (8 * baud) - 1;  // UBRR0 = 51 para 38400 bps
-        
-        UCSR0A = doble_velocidad;      // U2X0=1: Reduce error de baudrate
-        UCSR0B = interrupcion_rx       // RXCIE0: Interrupción RX
-               | interrupcion_registro_vacio  // UDRIE0: Interrupción TX
-               | activar_tx | activar_rx;
-        UCSR0C = caracter_8bits;       // 8N1: 8 bits, sin paridad, 1 stop
-    }
+
+void begin(uint32_t baud) {
+
+// Configuración para 38400 baudios con doble velocidad (U2X=1)
+
+UBRR0 = 16e6 / (8 * baud) - 1;  // UBRR0 = 51 para 38400 bps
+
+UCSR0A = doble_velocidad;      // U2X0=1: Reduce error de baudrate
+
+UCSR0B = interrupcion_rx       // RXCIE0: Interrupción RX
+
+| interrupcion_registro_vacio  // UDRIE0: Interrupción TX
+
+| activar_tx | activar_rx;
+
+UCSR0C = caracter_8bits;       // 8N1: 8 bits, sin paridad, 1 stop
+
+}
+
 };
-```
 
-#### **Funcionamiento del Buffer Circular de Envío (TX)**
+**Funcionamiento del Buffer Circular de Envío (TX)**
 
-**Concepto:** Buffer circular (ring buffer) de 256 bytes que actúa como cola FIFO (First In, First Out):
+Concepto: Buffer circular (ring buffer) de 256 bytes que actúa como cola FIFO (First In, First Out):
 
-```
 Buffer de 256 bytes (índices 0-255):
+
 ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
+
 │ 128 │ 129 │ 130 │     │     │     │ 125 │ 126 │ 127 │ 128 │
+
 └─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┘
-   ↑                                           ↑
+
+↑                                           ↑
+
 inicio_e (consume)                          fin_e (produce)
-   │                                           │
-   └──────────── Datos pendientes ────────────┘
-   
+
+│                                           │
+
+└──────────── Datos pendientes ────────────┘
+
 Datos pendientes = (fin_e - inicio_e) % 256
+
 Espacio libre = 256 - pendientes - 1
-```
 
 **¿Por qué 256 bytes?**
 
 A 3840 Hz de muestreo:
-```
+
 Bytes generados por segundo = 3840 bytes/s
+
 Capacidad del buffer = 256 bytes
 
 Tiempo de llenado = 256 bytes / 3840 bytes/s = 66.67 ms
 
 Margen de seguridad = 66.67 ms - 260 μs/muestra ≈ 66 ms
-```
 
-Este margen es **crucial** para:
-- Tolerar latencia variable del scheduler de Windows (1-16 ms)
-- Manejar picos de carga de CPU en la PC
-- Evitar pérdida de datos durante cambios de contexto del sistema operativo
+Este margen es crucial para:
+
+Tolerar latencia variable del scheduler de Windows (1-16 ms)
+
+Manejar picos de carga de CPU en la PC
+
+Evitar pérdida de datos durante cambios de contexto del sistema operativo
 
 Si usáramos buffer de solo 64 bytes → margen de 16 ms (insuficiente para Windows).
 
-#### **Función de Escritura No Bloqueante**
+**Función de Escritura No Bloqueante**
 
 Función principal usada en el loop() para enviar datos del ADC a la PC:
 
-```cpp
 // Intenta escribir y devuelve true si lo logra
+
 bool escribir(uint8_t byte){
-    // OPTIMIZACIÓN 1: Escritura directa si no hay cola y registro está vacío
-    if (!pendiente_escritura() && registro_vacio()){
-        UDR0 = byte;  // Escribir directamente al registro USART
-        return true;   // Transmisión iniciada inmediatamente
-    }
 
-    // OPTIMIZACIÓN 2: Si buffer lleno, rechazar (evita bloqueo)
-    if (libre_escritura() == 0)
-        return false;  // Buffer saturado - llamador debe manejar
+// OPTIMIZACIÓN 1: Escritura directa si no hay cola y registro está vacío
 
-    // RUTA NORMAL: Agregar al buffer circular
-    buffer_escritura[fin_e] = byte;
-    fin_e = (fin_e + 1) % sizeof(buffer_escritura);  // Módulo 256 (wrap-around)
-    
-    // Activar interrupción UDRE (Data Register Empty)
-    UCSR0B |= interrupcion_registro_vacio;
-    return true;
+if (!pendiente_escritura() && registro_vacio()){
+
+UDR0 = byte;  // Escribir directamente al registro USART
+
+return true;   // Transmisión iniciada inmediatamente
+
 }
-```
+
+// OPTIMIZACIÓN 2: Si buffer lleno, rechazar (evita bloqueo)
+
+if (libre_escritura() == 0)
+
+return false;  // Buffer saturado - llamador debe manejar
+
+// RUTA NORMAL: Agregar al buffer circular
+
+buffer_escritura[fin_e] = byte;
+
+fin_e = (fin_e + 1) % sizeof(buffer_escritura);  // Módulo 256 (wrap-around)
+
+// Activar interrupción UDRE (Data Register Empty)
+
+UCSR0B |= interrupcion_registro_vacio;
+
+return true;
+
+}
 
 **Flujo de datos en loop():**
 
-```cpp
 void loop() {
-    if (beat) {
-        beat = false;
-        uint8_t muestra_adc = adc.get();
-        
-        // Escritura no bloqueante - devuelve inmediatamente
-        usart.escribir(muestra_adc);  // ~10 ciclos de CPU (0.625 μs @ 16 MHz)
-        
-        // El loop continúa sin esperar la transmisión
-    }
+
+if (beat) {
+
+beat = false;
+
+uint8_t muestra_adc = adc.get();
+
+// Escritura no bloqueante - devuelve inmediatamente
+
+usart.escribir(muestra_adc);  // ~10 ciclos de CPU (0.625 μs @ 16 MHz)
+
+// El loop continúa sin esperar la transmisión
+
 }
-```
 
-#### **Interrupción ISR de Transmisión**
+}
 
-La transmisión real ocurre en **segundo plano** mediante interrupciones:
+**Interrupción ISR de Transmisión**
 
-```cpp
+La transmisión real ocurre en segundo plano mediante interrupciones:
+
 // Interrupción: Buffer de transmisión USART vacío (UDRE0)
+
 // Se ejecuta automáticamente cuando el registro UDR0 está listo para más datos
+
 ISR(USART0_UDRE_vect)
+
 {
-   usart.udrie();  // Llamar función de clase
+
+usart.udrie();  // Llamar función de clase
+
 }
 
 // Función que maneja la interrupción
-void udrie(){
-    // Si no hay más datos pendientes en el buffer
-    if (!pendiente_escritura()){
-        UCSR0B &= ~interrupcion_registro_vacio;  // Desactivar ISR
-        return;
-    }
 
-    // Enviar siguiente byte del buffer circular
-    UDR0 = buffer_escritura[inicio_e];
-    inicio_e = (inicio_e + 1) % sizeof(buffer_escritura);  // Avanzar puntero
+void udrie(){
+
+// Si no hay más datos pendientes en el buffer
+
+if (!pendiente_escritura()){
+
+UCSR0B &= ~interrupcion_registro_vacio;  // Desactivar ISR
+
+return;
+
 }
-```
+
+// Enviar siguiente byte del buffer circular
+
+UDR0 = buffer_escritura[inicio_e];
+
+inicio_e = (inicio_e + 1) % sizeof(buffer_escritura);  // Avanzar puntero
+
+}
 
 **Timing de la interrupción:**
 
-```
 A 38400 bps con 10 bits/byte:
+
 Tiempo entre interrupciones = 10 bits / 38400 bps = 260 μs
 
 Tiempo de ejecución de udrie() ≈ 20 ciclos @ 16 MHz = 1.25 μs
 
 Overhead de ISR = 1.25 μs / 260 μs = 0.48% de CPU
-```
 
-**Ventaja clave:** La ISR se ejecuta solo cuando hay datos pendientes, y se desactiva automáticamente cuando el buffer está vacío (eficiencia energética).
+Ventaja clave: La ISR se ejecuta solo cuando hay datos pendientes, y se desactiva automáticamente cuando el buffer está vacío (eficiencia energética).
 
-#### **Función Auxiliar: Espacio Libre en Buffer**
+**Función Auxiliar: Espacio Libre en Buffer**
 
-```cpp
 // Devuelve el espacio libre en el buffer de escritura
+
 uint8_t libre_escritura(){
-    uint8_t pendiente;
-    
-    // Calcular datos pendientes según posición de punteros
-    if (fin_e >= inicio_e)
-        pendiente = fin_e - inicio_e;       // Caso normal
-    else
-        pendiente = sizeof(buffer_escritura) - inicio_e + fin_e;  // Wrap-around
-    
-    return sizeof(buffer_escritura) - pendiente - 1;  // -1 para evitar ambigüedad lleno/vacío
+
+uint8_t pendiente;
+
+// Calcular datos pendientes según posición de punteros
+
+if (fin_e >= inicio_e)
+
+pendiente = fin_e - inicio_e;       // Caso normal
+
+else
+
+pendiente = sizeof(buffer_escritura) - inicio_e + fin_e;  // Wrap-around
+
+return sizeof(buffer_escritura) - pendiente - 1;  // -1 para evitar ambigüedad lleno/vacío
+
 }
-```
 
-**Condición de ambigüedad:** Si permitimos `fin_e == inicio_e` cuando está lleno, sería indistinguible del caso vacío. Por eso el buffer efectivo es 255 bytes (no 256).
+Condición de ambigüedad: Si permitimos fin_e == inicio_e cuando está lleno, sería indistinguible del caso vacío. Por eso el buffer efectivo es 255 bytes (no 256).
 
-#### **Función de Estado: Datos Pendientes**
+**Función de Estado: Datos Pendientes**
 
-```cpp
 bool pendiente_escritura(){
-    return fin_e != inicio_e;  // true si hay datos esperando transmisión
+
+return fin_e != inicio_e;  // true si hay datos esperando transmisión
+
 }
-```
 
 Usada en loop() para decisiones condicionales (modo passthrough).
 
-#### **Buffer de Recepción (RX)**
+**Buffer de Recepción (RX)**
 
 Implementación simétrica para recibir datos de la PC:
 
-```cpp
 // Interrupción: Recepción USART completa (RXC0)
+
 ISR(USART0_RX_vect)
+
 {
-   uint8_t leido = UDR0;  // Leer byte recibido del registro hardware
-   
-   if (usart.libre_lectura()){
-      usart.buffer_lectura[usart.fin_l] = leido;
-      usart.fin_l = (usart.fin_l + 1) % sizeof(usart.buffer_lectura);
-   }
-   // Si buffer lleno, se descarta el byte (overflow)
+
+uint8_t leido = UDR0;  // Leer byte recibido del registro hardware
+
+if (usart.libre_lectura()){
+
+usart.buffer_lectura[usart.fin_l] = leido;
+
+usart.fin_l = (usart.fin_l + 1) % sizeof(usart.buffer_lectura);
+
+}
+
+// Si buffer lleno, se descarta el byte (overflow)
+
 }
 
 // Función de lectura en loop()
+
 uint8_t leer(){
-    uint8_t valor = buffer_lectura[inicio_l];
-    inicio_l = (inicio_l + 1) % sizeof(buffer_lectura);
-    return valor;
+
+uint8_t valor = buffer_lectura[inicio_l];
+
+inicio_l = (inicio_l + 1) % sizeof(buffer_lectura);
+
+return valor;
+
 }
-```
 
 **¿Por qué buffer RX de solo 64 bytes?**
 
-```
 Datos recibidos por segundo = 3840 bytes/s (mismo que TX)
+
 Capacidad = 64 bytes
 
 Tiempo de llenado = 64 / 3840 = 16.67 ms
-```
 
 16 ms es suficiente porque:
-- El loop() lee datos inmediatamente (cada 260 μs)
-- No hay latencia del scheduler (código bare-metal en Arduino)
-- En el peor caso, el loop se ejecuta cada 1 ms (muy conservador)
+
+El loop() lee datos inmediatamente (cada 260 μs)
+
+No hay latencia del scheduler (código bare-metal en Arduino)
+
+En el peor caso, el loop se ejecuta cada 1 ms (muy conservador)
 
 Buffer más pequeño ahorra RAM (escasa en ATmega2560: solo 8 KB).
 
-#### **Diagrama de Flujo Completo: Transmisión con Buffer**
+**Diagrama de Flujo Completo: Transmisión con Buffer**
 
-```
 TIEMPO t=0:  loop() llama usart.escribir(128)
-             │
-             ├─► buffer_escritura[0] = 128
-             │   fin_e = 1
-             │   UCSR0B |= UDRIE0 (activar ISR)
-             └─► return true (sin bloqueo)
+
+│
+
+├─► buffer_escritura[0] = 128
+
+│   fin_e = 1
+
+│   UCSR0B |= UDRIE0 (activar ISR)
+
+└─► return true (sin bloqueo)
 
 TIEMPO t=10μs: ISR(USART0_UDRE_vect) se dispara (UDR0 vacío)
-               │
-               ├─► UDR0 = buffer_escritura[0]  (= 128)
-               │   inicio_e = 1
-               └─► Transmisión inicia (durará 260 μs)
+
+│
+
+├─► UDR0 = buffer_escritura[0]  (= 128)
+
+│   inicio_e = 1
+
+└─► Transmisión inicia (durará 260 μs)
 
 TIEMPO t=260μs: loop() llama usart.escribir(129)
-                │
-                ├─► UDR0 todavía transmitiendo
-                │   buffer_escritura[1] = 129
-                │   fin_e = 2
-                └─► return true
+
+│
+
+├─► UDR0 todavía transmitiendo
+
+│   buffer_escritura[1] = 129
+
+│   fin_e = 2
+
+└─► return true
 
 TIEMPO t=270μs: ISR(USART0_UDRE_vect) se dispara nuevamente
-                │
-                ├─► UDR0 = buffer_escritura[1]  (= 129)
-                │   inicio_e = 2
-                └─► Transmisión continúa...
+
+│
+
+├─► UDR0 = buffer_escritura[1]  (= 129)
+
+│   inicio_e = 2
+
+└─► Transmisión continúa...
 
 ... el proceso se repite cada 260 μs indefinidamente ...
-```
 
-#### **Relación Baudrate/Frecuencia de Muestreo (Sincronización Perfecta)**
+**Relación Baudrate/Frecuencia de Muestreo (Sincronización Perfecta)**
 
-```
 Baudrate mínimo = fs × bits_por_byte
-                = 3840 Hz × 10 bits/byte
-                = 38,400 baudios
+
+= 3840 Hz × 10 bits/byte
+
+= 38,400 baudios
 
 Tiempo por byte = 10 bits / 38400 bps = 260.42 μs
+
 Tiempo por muestra = 1 / 3840 Hz = 260.42 μs
 
 Diferencia = 0 μs (sincronización perfecta)
-```
 
 Esta sincronización garantiza que:
-- **El buffer nunca se llena:** Consumo = Producción (3840 bytes/s)
-- **El buffer nunca se vacía:** Flujo constante sin gaps
-- **Latencia mínima:** Solo 1 byte de retardo (~260 μs)
 
-#### **Optimización Adicional: Escritura en Bloque (no usada en este proyecto)**
+El buffer nunca se llena: Consumo = Producción (3840 bytes/s)
+
+El buffer nunca se vacía: Flujo constante sin gaps
+
+Latencia mínima: Solo 1 byte de retardo (~260 μs)
+
+**Optimización Adicional: Escritura en Bloque (no usada en este proyecto)**
 
 El código incluye una función optimizada para transmitir múltiples bytes:
 
-```cpp
 uint8_t escribir_bloque(const uint8_t* datos, uint8_t tamano) {
-    uint8_t escritos = 0;
-    
-    // Escribir primer byte directamente si es posible
-    if (!pendiente_escritura() && registro_vacio() && tamano > 0) {
-        UDR0 = datos[0];
-        escritos = 1;
-        datos++;
-        tamano--;
-    }
-    
-    // Escribir resto al buffer
-    while (tamano > 0 && libre_escritura() > 0) {
-        buffer_escritura[fin_e] = *datos;
-        fin_e = (fin_e + 1) % sizeof(buffer_escritura);
-        datos++;
-        tamano--;
-        escritos++;
-    }
-    
-    if (pendiente_escritura()) {
-        UCSR0B |= interrupcion_registro_vacio;
-    }
-    
-    return escritos;
+
+uint8_t escritos = 0;
+
+// Escribir primer byte directamente si es posible
+
+if (!pendiente_escritura() && registro_vacio() && tamano > 0) {
+
+UDR0 = datos[0];
+
+escritos = 1;
+
+datos++;
+
+tamano--;
+
 }
-```
 
-**Beneficio:** Reduce llamadas a ISR de ~3840/s a ~1000/s (75% menos overhead).
+// Escribir resto al buffer
 
-**No se usa actualmente** porque el flujo byte-por-byte es más simple y el overhead de ISR es despreciable (<0.5% CPU).
+while (tamano > 0 && libre_escritura() > 0) {
 
-#### **Conclusión Técnica: Sistema de Buffer de Envío**
+buffer_escritura[fin_e] = *datos;
 
-El sistema implementa una **arquitectura producer-consumer eficiente**:
+fin_e = (fin_e + 1) % sizeof(buffer_escritura);
+
+datos++;
+
+tamano--;
+
+escritos++;
+
+}
+
+if (pendiente_escritura()) {
+
+UCSR0B |= interrupcion_registro_vacio;
+
+}
+
+return escritos;
+
+}
+
+Beneficio: Reduce llamadas a ISR de ~3840/s a ~1000/s (75% menos overhead).
+
+No se usa actualmente porque el flujo byte-por-byte es más simple y el overhead de ISR es despreciable (<0.5% CPU).
+
+**Conclusión Técnica: Sistema de Buffer de Envío**
+
+El sistema implementa una arquitectura producer-consumer eficiente:
 
 **Producer (loop principal):**
-- Genera 3840 muestras/segundo
-- Escribe al buffer sin bloqueo (1-2 μs por llamada)
-- CPU libre >99% del tiempo
+
+Genera 3840 muestras/segundo
+
+Escribe al buffer sin bloqueo (1-2 μs por llamada)
+
+CPU libre >99% del tiempo
 
 **Consumer (ISR UDRE):**
-- Transmite automáticamente en segundo plano
-- Se activa solo cuando hay datos
-- Se desactiva cuando buffer vacío (ahorro energético)
+
+Transmite automáticamente en segundo plano
+
+Se activa solo cuando hay datos
+
+Se desactiva cuando buffer vacío (ahorro energético)
 
 **Características destacadas:**
-- ✅ **No bloqueante:** Loop nunca espera por transmisión
-- ✅ **Robusto:** 66 ms de margen ante latencia del sistema
-- ✅ **Eficiente:** <1% overhead de CPU en ISR
-- ✅ **Sincronizado:** Flujo constante sin gaps ni overflow
-- ✅ **Simple:** Arquitectura FIFO estándar de la industria
 
-Este diseño es **fundamental** para permitir muestreo continuo a 3840 Hz sin pérdida de datos, incluso con variabilidad del scheduler de Windows en la PC receptora.
+✅ No bloqueante: Loop nunca espera por transmisión
 
-**Tabla Resumen - Módulos Auxiliares:**
+✅ Robusto: 66 ms de margen ante latencia del sistema
 
-| Archivo | Función | Implementación |
-|---------|---------|----------------|
-| **tablas.h** | Tablas lookup formas onda | Valores precalculados sen(2πn/256), evita cálculos trigonométricos en ISR |
-| **prescaler.h** | Constantes prescaler ADC | Definiciones 2-128, usado: PRESCALER_128 (125 kHz) |
+✅ Eficiente: <1% overhead de CPU en ISR
 
-### 5.2 Aplicación de Visualización: SerialPlotter/src/
+✅ Sincronizado: Flujo constante sin gaps ni overflow
 
-Aplicación C++ con ImGui/ImPlot (gráficos) y FFTW3 (análisis espectral).
+✅ Simple: Arquitectura FIFO estándar de la industria
 
-**Tabla Resumen - Módulos PC:**
+Este diseño es fundamental para permitir muestreo continuo a 3840 Hz sin pérdida de datos, incluso con variabilidad del scheduler de Windows en la PC receptora.
 
-| Módulo | Función | Tecnología |
-|--------|---------|------------|
-| **main.cpp** | Loop renderizado y coordinación | ImGui + OpenGL + GLFW |
-| **Serial.cpp** | Comunicación puerto COM | Windows API (CreateFile/ReadFile) |
-| **FFT.cpp** | Análisis espectral 3840→1921 bins | FFTW3 v3.3.10 (r2c DFT) |
-| **MainWindow.cpp** | Interfaz gráfica + filtros IIR | ImGui + IIR1 (Butterworth ord. 8) |
-| **Buffers.h** | Buffer circular 3840 muestras | Template C++ |
-| **Settings.cpp** | Configuración persistente | JSON serialization |
+**5.1.5 tablas.h - Formas de Onda Pregeneradas**
 
-**Arquitectura flujo de datos:**
-```
-Serial.read() → TransformSample() → [Filtro IIR] → InverseTransform() → Serial.write()
-                      ↓                                                          ↓
-                 scrollY (original)                                      Arduino DAC
-                      ↓
-                 FFT.Compute() → Detectar armónicas → Visualización espectro
-```
+Contiene tablas de lookup con formas de onda precalculadas para generar señales en el DAC.
 
-Ver archivos en `SerialPlotter/src/` para implementación completa
+**Ejemplo de tabla senoidal:**
 
-### 5.3 Lógica de Procesamiento: Loop Principal y Aplicación de Filtros
+// Tabla senoidal de 256 muestras (1 ciclo completo)
 
-#### 5.3.1 Loop Principal del Arduino (DSP.ino)
+const uint8_t senoidal[256] PROGMEM = {
 
-El bucle principal implementa un **sistema DSP bidireccional** donde el Arduino actúa como puente entre el mundo analógico (ADC/DAC) y el procesamiento digital en PC:
+128, 131, 134, 137, 140, 143, 146, 149, 152, 155, 158, 162, ...
 
-```cpp
-/**
- * Bucle principal del programa
- * 
- * Sistema DSP bidireccional en tiempo real:
- * 1. Lee señal analógica del ADC a 3840 Hz
- * 2. Envía muestra por serie a SerialPlotter para procesamiento
- * 3. Recibe datos procesados desde SerialPlotter
- * 4. Escribe al DAC para generar señal de salida
- */
-void loop()
-{
-   // ==============================
-   // CÓDIGO DSP ACTIVO - Sistema bidireccional ADC ↔ PC ↔ DAC
-   // Funcionamiento:
-   // 1. Lee señal analógica del ADC a 3840 Hz
-   // 2. Envía muestra por serie a la PC/interfaz C++
-   // 3. Si recibe datos procesados de la PC, los usa para el DAC
-   // 4. Si no, usa directamente el ADC invertido para el DAC
-   if (beat){
-      beat = false;
-      
-      // Enviar muestra actual por serie a la interfaz C++
-      uint8_t muestra_adc = adc.get();           // Leer ADC (0-255)
-      usart.escribir(muestra_adc);               // Enviar a PC para análisis/filtrado
-      
-      // Recibir datos procesados desde la interfaz C++
-      if (usart.pendiente_lectura()){
-         valor = usart.leer();                   // Usar señal filtrada/procesada de la PC
-      }
-      else {
-         valor = muestra_adc;                    // Usar ADC directo como fallback
-      }
-      
-      // El valor ya se escribirá al DAC en la próxima interrupción del Timer1
-   }
+// Valores de 0-255 representando sen(2πn/256) escalados
+
+};
+
+// Uso en la ISR del Timer1:
+
+ISR(TIMER1_COMPA_vect) {
+
+static uint8_t index = 0;
+
+uint8_t valor = pgm_read_byte(&senoidal[index++]);
+
+PORTA = valor;  // Escribir al DAC
+
 }
-```
+
+Ventaja: Evita cálculos trigonométricos en tiempo real (muy lentos en ATmega). La tabla en PROGMEM no consume RAM.
+
+**5.1.6 prescaler.h - Definiciones de Prescaler**
+
+Header simple con constantes para configurar el prescaler del ADC:
+
+#define PRESCALER_2    1
+
+#define PRESCALER_4    2
+
+#define PRESCALER_8    3
+
+#define PRESCALER_16   4
+
+#define PRESCALER_32   5
+
+#define PRESCALER_64   6
+
+#define PRESCALER_128  7
+
+// Frecuencia del reloj ADC = F_CPU / prescaler
+
+// F_ADC = 16 MHz / 128 = 125 kHz
+
+// Tiempo de conversión ≈ 13 ciclos ADC = 104 μs
+
+5.2 Aplicación de Visualización: SerialPlotter/src/
+
+La aplicación de PC está desarrollada en C++ con ImGui/ImPlot para gráficos y FFTW3 para análisis espectral.
+
+**Estructura de archivos:**
+
+SerialPlotter/src/
+
+├── main.cpp             # Punto de entrada, loop principal
+
+├── main.h               # Declaraciones globales
+
+├── MainWindow.cpp       # Ventana principal e interfaz ImGui
+
+├── MainWindow.h
+
+├── Serial.cpp           # Comunicación serial (API Windows)
+
+├── Serial.h
+
+├── FFT.cpp              # Análisis espectral con FFTW3
+
+├── FFT.h
+
+├── Settings.cpp         # Configuración persistente
+
+├── Settings.h
+
+├── Console.cpp          # Consola de debug
+
+├── Console.h
+
+├── Buffers.h            # Buffers circulares para datos
+
+└── Widgets.h            # Widgets personalizados de ImGui
+
+**5.2.1 main.cpp - Loop Principal**
+
+Implementa el bucle de renderizado de ImGui y coordina todos los módulos:
+
+int main() {
+
+// Inicialización de OpenGL, GLFW, ImGui
+
+init_graphics();
+
+// Instancias globales
+
+Serial serial;
+
+FFT fft(3840);              // 3840 muestras para FFT
+
+ScrollingBuffer<3840> buffer_input;
+
+ScrollingBuffer<3840> buffer_output;
+
+while (!glfwWindowShouldClose(window)) {
+
+// 1. Leer puerto serial
+
+uint8_t data[512];
+
+int bytes = serial.read(data, 512);
+
+for (int i = 0; i < bytes; i++) {
+
+double voltage = TransformSample(data[i]);
+
+buffer_input.push(voltage);
+
+// Aplicar filtro si está activo
+
+double filtered = ApplyFilter(voltage);
+
+buffer_output.push(filtered);
+
+}
+
+// 2. Calcular FFT cada N frames
+
+if (buffer_input.full()) {
+
+fft.SetData(buffer_input.data(), 3840);
+
+fft.Compute();
+
+}
+
+// 3. Renderizar GUI
+
+ImGui::NewFrame();
+
+RenderInterface();
+
+ImGui::Render();
+
+glfwSwapBuffers(window);
+
+glfwPollEvents();
+
+}
+
+}
+
+**5.2.2 Serial.cpp - Comunicación Serial Windows**
+
+Encapsula las API nativas de Windows (CreateFile, ReadFile, WriteFile) para simplificar el código.
+
+**Características:**
+
+**Enumeración automática de puertos COM**
+
+**Configuración de baudrate, paridad, bits**
+
+**Lectura/escritura no bloqueante con timeouts**
+
+**Fragmento de apertura de puerto:**
+
+bool Serial::open(std::string port, int baud) {
+
+// Abrir dispositivo COM con acceso lectura/escritura
+
+file = CreateFileA(
+
+port.c_str(),
+
+GENERIC_READ | GENERIC_WRITE,
+
+0,      // Sin compartir
+
+NULL,   // Sin seguridad
+
+OPEN_EXISTING,
+
+0,      // Sin overlapped I/O
+
+NULL
+
+);
+
+if (file == INVALID_HANDLE_VALUE) return false;
+
+// Configurar parámetros de comunicación
+
+DCB dcb = {0};
+
+dcb.DCBlength = sizeof(DCB);
+
+GetCommState(file, &dcb);
+
+dcb.BaudRate = baud;        // 38400
+
+dcb.ByteSize = 8;           // 8 bits de datos
+
+dcb.Parity = NOPARITY;      // Sin paridad
+
+dcb.StopBits = ONESTOPBIT;  // 1 bit de parada
+
+SetCommState(file, &dcb);
+
+// Configurar timeouts (no bloqueante)
+
+COMMTIMEOUTS timeouts = {0};
+
+timeouts.ReadIntervalTimeout = 1;
+
+timeouts.ReadTotalTimeoutMultiplier = 0;
+
+timeouts.ReadTotalTimeoutConstant = 1;
+
+SetCommTimeouts(file, &timeouts);
+
+return true;
+
+}
+
+**5.2.3 FFT.cpp - Análisis Espectral**
+
+Implementa la transformada rápida de Fourier usando la biblioteca FFTW3.
+
+**Clase FFT simplificada:**
+
+class FFT {
+
+fftw_complex* complex;           // Salida (números complejos)
+
+fftw_plan p;                     // Plan de ejecución optimizado
+
+std::vector<double> samples;     // Entrada (3840 muestras)
+
+std::vector<double> amplitudes;  // Salida (1921 frecuencias)
+
+std::vector<Harmonic> detected_harmonics;
+
+public:
+
+FFT(int sample_count) {
+
+samples.resize(sample_count);
+
+amplitudes.resize(sample_count / 2 + 1);
+
+// Reservar memoria alineada para FFTW
+
+complex = (fftw_complex*)fftw_malloc(
+
+sizeof(fftw_complex) * (sample_count / 2 + 1)
+
+);
+
+// Crear plan de ejecución (lo optimiza FFTW)
+
+p = fftw_plan_dft_r2c_1d(
+
+sample_count,
+
+samples.data(),
+
+complex,
+
+FFTW_MEASURE  // Mide y elige mejor algoritmo
+
+);
+
+}
+
+void Compute() {
+
+fftw_execute(p);  // Ejecutar FFT
+
+// Calcular magnitudes
+
+for (int i = 0; i < amplitudes.size(); i++) {
+
+double real = complex[i][0];
+
+double imag = complex[i][1];
+
+amplitudes[i] = sqrt(real*real + imag*imag) / samples.size();
+
+}
+
+// Detectar pico (frecuencia dominante)
+
+n_frequency = std::max_element(
+
+amplitudes.begin() + 10,  // Ignora DC y ruido bajo
+
+amplitudes.end()
+
+) - amplitudes.begin();
+
+}
+
+};
+
+**Detección de armónicas:**
+
+void DetectHarmonics(double fundamental_freq, int max_harmonics) {
+
+detected_harmonics.clear();
+
+for (int n = 1; n <= max_harmonics; n++) {
+
+double expected_freq = fundamental_freq * n;
+
+// Convertir frecuencia a bin del espectro
+
+int bin = (int)(expected_freq * samples.size() / sampling_rate);
+
+if (bin >= amplitudes.size()) break;  // Fuera de rango Nyquist
+
+// Buscar pico en ventana de ±3 bins
+
+int best_bin = bin;
+
+double max_amp = amplitudes[bin];
+
+for (int offset = -3; offset <= 3; offset++) {
+
+int check_bin = bin + offset;
+
+if (check_bin > 0 && check_bin < amplitudes.size()) {
+
+if (amplitudes[check_bin] > max_amp) {
+
+max_amp = amplitudes[check_bin];
+
+best_bin = check_bin;
+
+}
+
+}
+
+}
+
+Harmonic h;
+
+h.frequency = best_bin * sampling_rate / samples.size();
+
+h.amplitude = max_amp;
+
+h.bin_index = best_bin;
+
+detected_harmonics.push_back(h);
+
+}
+
+}
+
+**5.2.4 Buffers.h - Buffers Circulares**
+
+Template de buffer circular optimizado para señales de audio:
+
+template<int SIZE>
+
+class ScrollingBuffer {
+
+double buffer[SIZE];
+
+int write_index = 0;
+
+bool is_full = false;
+
+public:
+
+void push(double value) {
+
+buffer[write_index] = value;
+
+write_index = (write_index + 1) % SIZE;
+
+if (write_index == 0) is_full = true;
+
+}
+
+double* data() { return buffer; }
+
+int size() const { return is_full ? SIZE : write_index; }
+
+bool full() const { return is_full; }
+
+};
+
+**5.2.5 MainWindow.cpp - Interfaz Gráfica**
+
+Renderiza la interfaz completa usando ImGui/ImPlot:
+
+Gráficos temporales: Entrada y salida filtrada
+
+Espectro FFT: Gráfico de barras con marcadores de armónicas
+
+Panel de controles: Selector de filtro, frecuencia de corte
+
+Tabla de armónicas: Frecuencia, amplitud, THD
+
+**5.3 Lógica de Procesamiento: Loop Principal y Aplicación de Filtros**
+
+**5.3.1 Loop Principal del Arduino (DSP.ino)**
+
+El bucle principal implementa un sistema DSP bidireccional donde el Arduino actúa como puente entre el mundo analógico (ADC/DAC) y el procesamiento digital en PC:
+
+/**
+
+* Bucle principal del programa
+
+*
+
+* Sistema DSP bidireccional en tiempo real:
+
+* 1. Lee señal analógica del ADC a 3840 Hz
+
+* 2. Envía muestra por serie a SerialPlotter para procesamiento
+
+* 3. Recibe datos procesados desde SerialPlotter
+
+* 4. Escribe al DAC para generar señal de salida
+
+*/
+
+void loop()
+
+{
+
+// ==============================
+
+// CÓDIGO DSP ACTIVO - Sistema bidireccional ADC ↔ PC ↔ DAC
+
+// Funcionamiento:
+
+// 1. Lee señal analógica del ADC a 3840 Hz
+
+// 2. Envía muestra por serie a la PC/interfaz C++
+
+// 3. Si recibe datos procesados de la PC, los usa para el DAC
+
+// 4. Si no, usa directamente el ADC invertido para el DAC
+
+if (beat){
+
+beat = false;
+
+// Enviar muestra actual por serie a la interfaz C++
+
+uint8_t muestra_adc = adc.get();           // Leer ADC (0-255)
+
+usart.escribir(muestra_adc);               // Enviar a PC para análisis/filtrado
+
+// Recibir datos procesados desde la interfaz C++
+
+if (usart.pendiente_lectura()){
+
+valor = usart.leer();                   // Usar señal filtrada/procesada de la PC
+
+}
+
+else {
+
+valor = muestra_adc;                    // Usar ADC directo como fallback
+
+}
+
+// El valor ya se escribirá al DAC en la próxima interrupción del Timer1
+
+}
+
+}
 
 **Flujo de datos detallado:**
 
-1. **Espera por señal del Timer1:** La variable global `beat` se activa cada 260 μs por la interrupción del Timer1
+Espera por señal del Timer1: La variable global beat se activa cada 260 μs por la interrupción del Timer1
 
-2. **Lectura del ADC:** Se obtiene la última muestra convertida (ya disponible gracias al auto-trigger)
+Lectura del ADC: Se obtiene la última muestra convertida (ya disponible gracias al auto-trigger)
 
-3. **Transmisión a PC:** El byte se envía por USART sin espera bloqueante (buffer asíncrono de 256 bytes)
+Transmisión a PC: El byte se envía por USART sin espera bloqueante (buffer asíncrono de 256 bytes)
 
-4. **Recepción condicional:**
-   - **Con filtro activo:** La PC envía datos procesados → `valor = usart.leer()`
-   - **Sin filtro (Ninguno):** No hay datos disponibles → `valor = muestra_adc` (modo passthrough)
+**Recepción condicional:**
 
-5. **Escritura al DAC:** En la próxima interrupción del Timer1, se ejecuta `PORTA = valor` (variable global actualizada)
+Con filtro activo: La PC envía datos procesados → valor = usart.leer()
 
-**Respuesta a pregunta del profesor:** "¿Cómo funciona si no se reciben datos desde la interfaz?"
+Sin filtro (Ninguno): No hay datos disponibles → valor = muestra_adc (modo passthrough)
 
-El sistema implementa **modo passthrough automático** mediante la condición `if (usart.pendiente_lectura())`. Si la PC no está conectada o el filtro está en modo "Ninguno", el buffer de recepción estará vacío y el código simplemente usa `valor = muestra_adc`, lo que efectivamente conecta el ADC directamente al DAC sin procesamiento. Esto permite:
+Escritura al DAC: En la próxima interrupción del Timer1, se ejecuta PORTA = valor (variable global actualizada)
 
-- ✅ Operar sin PC conectada (monitor de señal básico)
-- ✅ Minimizar latencia cuando no hay filtrado
-- ✅ Sistema robusto ante desconexión temporal del USB
+Respuesta a pregunta del profesor: "¿Cómo funciona si no se reciben datos desde la interfaz?"
 
-#### 5.3.2 Aplicación de Filtros en la PC (MainWindow.cpp)
+El sistema implementa modo passthrough automático mediante la condición if (usart.pendiente_lectura()). Si la PC no está conectada o el filtro está en modo "Ninguno", el buffer de recepción estará vacío y el código simplemente usa valor = muestra_adc, lo que efectivamente conecta el ADC directamente al DAC sin procesamiento. Esto permite:
 
-El filtrado se realiza **completamente en la PC**, no en el Arduino. El microcontrolador solo captura y reproduce señales; todo el DSP pesado ocurre en el worker thread de la aplicación C++:
+✅ Operar sin PC conectada (monitor de señal básico)
 
-```cpp
+✅ Minimizar latencia cuando no hay filtrado
+
+✅ Sistema robusto ante desconexión temporal del USB
+
+**5.3.2 Aplicación de Filtros en la PC (MainWindow.cpp)**
+
+El filtrado se realiza completamente en la PC, no en el Arduino. El microcontrolador solo captura y reproduce señales; todo el DSP pesado ocurre en el worker thread de la aplicación C++:
+
 // Declaración de filtros IIR Butterworth orden 8 (variables globales)
+
 Iir::Butterworth::LowPass<8> lowpass_filter;
+
 Iir::Butterworth::HighPass<8> highpass_filter;
 
 // Función de procesamiento en SerialWorker (ejecuta en hilo separado)
+
 void MainWindow::SerialWorker() {
-    while (do_serial_work) {
-        if (!serial.connected())
-            continue;
 
-        // Paso 1: Leer bloque de datos desde Arduino
-        size_t read = serial.read(read_buffer.data(), buffer_size);
-        
-        if (read > 0) {
-            // Paso 2: Procesar cada muestra recibida
-            for (size_t i = 0; i < read; ++i) {
-                // Convertir ADC (0-255) → Voltaje (0-5V)
-                double transformado = TransformSample(read_buffer[i]);
-                
-                // Almacenar señal original
-                scrollY->push(transformado);
-                scrollX->push(next_time);
-                
-                // Paso 3: Aplicar filtro digital IIR Butterworth orden 8
-                double resultado = transformado;
-                
-                switch (selected_filter)
-                {
-                    case Filter::LowPass:
-                        resultado = lowpass_filter.filter(transformado);
-                        break;
-                    case Filter::HighPass:
-                        resultado = highpass_filter.filter(transformado);
-                        break;
-                    case Filter::None:
-                        break;  // Bypass: salida = entrada (no filtrado)
-                }
+while (do_serial_work) {
 
-                // Paso 4: Almacenar señal filtrada
-                filter_scrollY->push(resultado);
-                next_time += 1.0 / settings->sampling_rate;
+if (!serial.connected())
 
-                // Paso 5: Transformar Voltaje → DAC (0-255) para enviar de vuelta
-                write_buffer[i] = InverseTransformSample(resultado);
-            }
-            
-            // Paso 6: Enviar bloque procesado de vuelta por serial al Arduino
-            serial.write(write_buffer.data(), read);
-        }
-    }
+continue;
+
+// Paso 1: Leer bloque de datos desde Arduino
+
+size_t read = serial.read(read_buffer.data(), buffer_size);
+
+if (read > 0) {
+
+// Paso 2: Procesar cada muestra recibida
+
+for (size_t i = 0; i < read; ++i) {
+
+// Convertir ADC (0-255) → Voltaje (0-5V)
+
+double transformado = TransformSample(read_buffer[i]);
+
+// Almacenar señal original
+
+scrollY->push(transformado);
+
+scrollX->push(next_time);
+
+// Paso 3: Aplicar filtro digital IIR Butterworth orden 8
+
+double resultado = transformado;
+
+switch (selected_filter)
+
+{
+
+case Filter::LowPass:
+
+resultado = lowpass_filter.filter(transformado);
+
+break;
+
+case Filter::HighPass:
+
+resultado = highpass_filter.filter(transformado);
+
+break;
+
+case Filter::None:
+
+break;  // Bypass: salida = entrada (no filtrado)
+
 }
-```
+
+// Paso 4: Almacenar señal filtrada
+
+filter_scrollY->push(resultado);
+
+next_time += 1.0 / settings->sampling_rate;
+
+// Paso 5: Transformar Voltaje → DAC (0-255) para enviar de vuelta
+
+write_buffer[i] = InverseTransformSample(resultado);
+
+}
+
+// Paso 6: Enviar bloque procesado de vuelta por serial al Arduino
+
+serial.write(write_buffer.data(), read);
+
+}
+
+}
+
+}
 
 **Configuración de filtros:**
 
-```cpp
 void MainWindow::SelectFilter(Filter filter) {
-    selected_filter = filter;
-    
-    // Ajustar rango de frecuencia de corte según el tipo de filtro
-    switch (selected_filter)
-    {
-        case Filter::LowPass:
-            // Pasa bajos: rango completo de 1 Hz hasta Nyquist
-            min_cutoff_frequency = 1;
-            max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
-            break;
-        case Filter::HighPass:
-            // Pasa altos: rango completo de 1 Hz hasta Nyquist
-            min_cutoff_frequency = 1;
-            max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
-            break;
-        case Filter::None:
-            break;  // Sin restricciones, no se usa fc
-    }
+
+selected_filter = filter;
+
+// Ajustar rango de frecuencia de corte según el tipo de filtro
+
+switch (selected_filter)
+
+{
+
+case Filter::LowPass:
+
+// Pasa bajos: rango completo de 1 Hz hasta Nyquist
+
+min_cutoff_frequency = 1;
+
+max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
+
+break;
+
+case Filter::HighPass:
+
+// Pasa altos: rango completo de 1 Hz hasta Nyquist
+
+min_cutoff_frequency = 1;
+
+max_cutoff_frequency = settings->sampling_rate / 2 - 1;  // 1919 Hz @ 3840 Hz
+
+break;
+
+case Filter::None:
+
+break;  // Sin restricciones, no se usa fc
+
+}
+
 }
 
 void MainWindow::SetupFilter() {
-    switch (selected_filter)
-    {
-        case Filter::LowPass:
-            lowpass_filter.setup(settings->sampling_rate, cutoff_frequency[1]);
-            break;
-        case Filter::HighPass:
-            highpass_filter.setup(settings->sampling_rate, cutoff_frequency[2]);
-            break;
-        case Filter::None:
-            break;  // No requiere configuración
-    }
-}
-```
 
-**Respuesta a pregunta del profesor:** "¿Qué filtro está aplicado en la gráfica o en el código?"
+switch (selected_filter)
+
+{
+
+case Filter::LowPass:
+
+lowpass_filter.setup(settings->sampling_rate, cutoff_frequency[1]);
+
+break;
+
+case Filter::HighPass:
+
+highpass_filter.setup(settings->sampling_rate, cutoff_frequency[2]);
+
+break;
+
+case Filter::None:
+
+break;  // No requiere configuración
+
+}
+
+}
+
+Respuesta a pregunta del profesor: "¿Qué filtro está aplicado en la gráfica o en el código?"
 
 El filtro activo depende de la selección del usuario en la interfaz gráfica:
 
-- **Filter::None** (predeterminado): Sin filtrado, salida = entrada directamente
-- **Filter::LowPass**: IIR Butterworth orden 8, fc entre 1-1919 Hz (rango completo hasta Nyquist)
-- **Filter::HighPass**: IIR Butterworth orden 8, fc entre 1-1919 Hz (rango completo hasta Nyquist)
+Filter::None (predeterminado): Sin filtrado, salida = entrada directamente
+
+Filter::LowPass: IIR Butterworth orden 8, fc entre 1-1919 Hz (rango completo hasta Nyquist)
+
+Filter::HighPass: IIR Butterworth orden 8, fc entre 1-1919 Hz (rango completo hasta Nyquist)
 
 La librería IIR1 (Bernd Porr) implementa filtros Butterworth mediante ecuaciones en diferencias optimizadas. El orden 8 proporciona:
 
-- Atenuación: -48 dB/octava fuera de la banda de paso
-- Respuesta de fase: Casi lineal en banda de paso
-- Complejidad: 16 multiplicaciones + 16 sumas por muestra
+Atenuación: -48 dB/octava fuera de la banda de paso
+
+Respuesta de fase: Casi lineal en banda de paso
+
+Complejidad: 16 multiplicaciones + 16 sumas por muestra
 
 **Latencia total del sistema:**
 
-```
 Latencia Arduino → PC: 260 μs (1 byte @ 38400 bps)
+
 Procesamiento filtro: ~15 μs (IIR orden 8)
+
 Latencia PC → Arduino: 260 μs (1 byte de vuelta)
+
 ----------------------------------------------------
+
 Latencia total: ~535 μs (2.05 muestras @ 3840 Hz)
-```
 
 Esta latencia es despreciable para aplicaciones de audio (20 Hz - 20 kHz requieren <10 ms) y visualización en tiempo real.
 
-#### 5.3.3 Diagrama de Flujo del Sistema Completo
+**5.3.3 Diagrama de Flujo del Sistema Completo**
 
-```
 ┌─────────────────────────────────────────────────────────────────────┐
+
 │                         ARDUINO MEGA 2560                           │
+
 │                                                                     │
+
 │  Timer1 ISR (260 μs)  ──►  PORTA = valor  (actualiza DAC)         │
+
 │         │                                                           │
+
 │         └──►  beat = true  (señaliza loop)                         │
+
 │                                                                     │
+
 │  ADC ISR  ──►  Almacena muestra convertida en buffer              │
+
 │                                                                     │
+
 │  loop():                                                            │
+
 │    1. muestra_adc = adc.get()      [ADC: 0-255]                   │
+
 │    2. usart.escribir(muestra_adc)  ───────────────┐                │
+
 │    3. if (pendiente_lectura())                    │                │
+
 │         valor = usart.leer()  ◄───────────────┐   │                │
+
 │       else                                     │   │                │
+
 │         valor = muestra_adc (passthrough)      │   │                │
+
 └────────────────────────────────────────────────┼───┼────────────────┘
-                                                 │   │
-                            UART @ 38400 bps    │   │
-                            260 μs/byte         ▼   ▲
+
+│   │
+
+UART @ 38400 bps    │   │
+
+260 μs/byte         ▼   ▲
+
 ┌─────────────────────────────────────────────────┼─┼────────────────┐
+
 │                    APLICACIÓN PC (C++)          │ │                │
+
 │                                                 │ │                │
+
 │  SerialWorker (hilo separado):                 │ │                │
+
 │    1. read_buffer ◄────────────────────────────┘ │                │
+
 │    2. transformado = TransformSample()           │                │
+
 │    3. switch (selected_filter):                  │                │
+
 │         LowPass:  resultado = lowpass.filter()   │                │
+
 │         HighPass: resultado = highpass.filter()  │                │
+
 │         None:     resultado = transformado       │                │
+
 │    4. write_buffer[i] = InverseTransform()       │                │
+
 │    5. serial.write(write_buffer) ────────────────┘                │
+
 │                                                                    │
+
 │  AnalysisWorker (FFT):                                             │
+
 │    - Calcula espectro de frecuencias                              │
+
 │    - Detecta armónicas                                            │
+
 │                                                                    │
+
 │  MainWindow (UI):                                                  │
+
 │    - Renderiza gráficos temporal y FFT                            │
+
 │    - Controles de usuario (filtro, fc)                            │
+
 └────────────────────────────────────────────────────────────────────┘
-```
 
 **Conclusión técnica:**
 
-El sistema implementa una arquitectura **distribuida de procesamiento DSP**:
+El sistema implementa una arquitectura distribuida de procesamiento DSP:
 
-- **Arduino:** Adquisición de alta velocidad (ADC), generación de señales (DAC), temporización precisa (Timer1)
-- **PC:** Procesamiento pesado (filtros IIR, FFT 3840 puntos), visualización avanzada (ImPlot), análisis espectral
+Arduino: Adquisición de alta velocidad (ADC), generación de señales (DAC), temporización precisa (Timer1)
+
+PC: Procesamiento pesado (filtros IIR, FFT 3840 puntos), visualización avanzada (ImPlot), análisis espectral
 
 Esta división permite aprovechar las fortalezas de cada plataforma: el microcontrolador maneja la interfaz analógica con timing determinístico, mientras la PC ejecuta algoritmos complejos con punto flotante y memoria ilimitada.
 
-## 6. JUSTIFICACIONES DE DISEÑO
+JUSTIFICACIONES DE DISEÑO
 
-### 6.1 Elección de Frecuencia de Muestreo
+### 5.1 Elección de Frecuencia de Muestreo
 
-Decisión: fs=3840fs​=3840 Hz
+Decisión: fs​=3840 Hz
 
-**Análisis basado en Teorema de Nyquist:**
+Análisis basado en Teorema de Nyquist:
 
 
+![img]()
 
 **Justificación:**
 
-**Rango útil:** Cubre señales de instrumentación típicas (0.1 Hz - 1500 Hz), incluyendo sensores de temperatura, presión, acelerómetros, y señales de audio en aplicaciones didácticas (20 Hz - 1 kHz)
+Rango útil: Cubre señales 1 Hz – 1,5 kHz
 
 **Compatibilidad con baudrate:**
 
 Baudrate requerido = 10 bits/muestra × 3840 muestras/s = 38400 bps
 
-Baudrate estándar disponible: 38400 bps 
+Baudrate estándar disponible: 38400 bps
 
 **¿Por qué NO usar baudios superiores (ej: 115200 bps)?**
 
-Esta es una pregunta fundamental del diseño. Intuitivamente podría parecer que usar un baudrate superior (como 115200 bps) sería ventajoso al liberar tiempo de CPU para "otras tareas". Sin embargo, este razonamiento es **incorrecto** para este sistema específico por las siguientes razones técnicas:
+Esta es una pregunta fundamental del diseño. Intuitivamente podría parecer que usar un baudrate superior (como 115200 bps) sería ventajoso al liberar tiempo de CPU para "otras tareas". Sin embargo, este razonamiento es incorrecto para este sistema específico por las siguientes razones técnicas:
 
 **1. No existen "otras tareas críticas" en el microcontrolador:**
 
 El Arduino Mega está dedicado exclusivamente a:
-- Adquisición de datos del ADC (disparada por Timer1, hardware automático)
-- Transmisión serial (manejada por hardware USART con interrupciones)
-- Lectura opcional de comandos desde la PC (mínima CPU)
+
+Adquisición de datos del ADC (disparada por Timer1, hardware automático)
+
+Transmisión serial (manejada por hardware USART con interrupciones)
+
+Lectura opcional de comandos desde la PC (mínima CPU)
 
 El loop principal está prácticamente vacío:
-```cpp
+
 void loop() {
-  if (adc.available()) {
-    usart.write(adc.get());  // ~10 ciclos de CPU
-  }
+
+if (adc.available()) {
+
+usart.write(adc.get());  // ~10 ciclos de CPU
+
 }
-```
+
+}
 
 Tiempo de CPU usado: <1% del total. No hay necesidad de liberar más tiempo.
 
 **2. Sincronización perfecta evita pérdida de datos:**
 
 Con 38400 bps, cada byte tarda exactamente 260 μs en transmitirse:
-```
+
 T_byte = 10 bits / 38400 bps = 260.42 μs
+
 T_sample = 1 / 3840 Hz = 260.42 μs
 
 Diferencia: 0 μs (sincronización perfecta)
-```
 
 Esta sincronización garantiza que:
-- El buffer de transmisión NUNCA se llena (overflow)
-- El buffer de transmisión NUNCA se vacía completamente (underflow)
-- Flujo de datos constante y predecible sin jitter
+
+El buffer de transmisión NUNCA se llena (overflow)
+
+El buffer de transmisión NUNCA se vacía completamente (underflow)
+
+Flujo de datos constante y predecible sin jitter
 
 **3. Con baudrate superior: Desperdicio de ancho de banda y recursos:**
 
 Si usáramos 115200 bps (3× más rápido):
-```
+
 T_byte @ 115200 = 10 bits / 115200 bps = 86.8 μs
 
 Tiempo disponible entre muestras = 260 μs
+
 Tiempo usado en transmisión = 86.8 μs
+
 Tiempo OCIOSO = 173.2 μs (66% desperdiciado)
-```
 
 **Consecuencias negativas:**
 
-a) **Fragmentación temporal:** El puerto serial estaría transmitiendo en ráfagas cortas (87 μs) seguidas de largos períodos sin actividad (173 μs). Esto NO mejora el rendimiento, solo introduce variabilidad.
+a) Fragmentación temporal: El puerto serial estaría transmitiendo en ráfagas cortas (87 μs) seguidas de largos períodos sin actividad (173 μs). Esto NO mejora el rendimiento, solo introduce variabilidad.
 
-b) **Mayor consumo energético:** La USART opera a frecuencia más alta innecesariamente, consumiendo más corriente sin beneficio alguno.
+b) Mayor consumo energético: La USART opera a frecuencia más alta innecesariamente, consumiendo más corriente sin beneficio alguno.
 
-c) **Ruido electromagnético:** Frecuencias de transmisión más altas generan más EMI (interferencia electromagnética), que puede acoplarse al circuito de acondicionamiento analógico y degradar la señal del ADC.
+c) Ruido electromagnético: Frecuencias de transmisión más altas generan más EMI (interferencia electromagnética), que puede acoplarse al circuito de acondicionamiento analógico y degradar la señal del ADC.
 
-d) **Complejidad del diseño:** Rompe la relación matemática simple entre fs y baudrate, dificultando el análisis temporal y la depuración.
+d) Complejidad del diseño: Rompe la relación matemática simple entre fs y baudrate, dificultando el análisis temporal y la depuración.
 
 **4. Saturación del receptor en PC:**
 
 Con baudrate superior, los datos llegan "a ráfagas" en lugar de flujo constante:
 
-```
 @ 38400 bps:  ████████████████████████████  (flujo continuo)
+
 @ 115200 bps: ███░░░░░░███░░░░░░███░░░░░░  (ráfagas + vacíos)
-```
 
 El scheduler de Windows tiene que procesar los mismos 3840 bytes/segundo, pero con patrón temporal errático, incrementando latencia y jitter del sistema.
 
@@ -2995,42 +3692,55 @@ El scheduler de Windows tiene que procesar los mismos 3840 bytes/segundo, pero c
 
 Los baudrates reales del ATmega2560 tienen error debido a la división entera del reloj:
 
-```
 Baudrate deseado: 38400 bps
+
 UBRR0 = (16,000,000 / (8 × 38400)) - 1 = 51.08... ≈ 51
+
 Baudrate real = 16,000,000 / (8 × (51+1)) = 38,461.5 bps
+
 Error: +0.16% (excelente, dentro de especificación ±2%)
 
 Baudrate deseado: 115200 bps
+
 UBRR0 = (16,000,000 / (8 × 115200)) - 1 = 16.36... ≈ 16
+
 Baudrate real = 16,000,000 / (8 × (16+1)) = 117,647 bps
+
 Error: +2.12% (al límite de especificación, riesgo de errores)
-```
 
 A baudrates más altos, el error de cuantización aumenta, acercándose al límite de tolerancia de ±2% que puede causar errores de frame en comunicaciones prolongadas.
 
 **6. Compatibilidad universal:**
 
 38400 bps es soportado universalmente por:
-- Todos los sistemas operativos (Windows, Linux, macOS)
-- Adaptadores USB-Serial económicos
-- Herramientas de debug (PuTTY, Arduino Serial Monitor, etc.)
+
+Todos los sistemas operativos (Windows, Linux, macOS)
+
+Adaptadores USB-Serial económicos
+
+Herramientas de debug (PuTTY, Arduino Serial Monitor, etc.)
 
 Baudrates no estándar o muy altos pueden tener problemas de compatibilidad con drivers antiguos o hardware económico.
 
 **Conclusión técnica:**
 
-La elección de 38400 bps NO es una limitación, sino una **decisión de diseño óptima** que:
-- ✅ Sincroniza perfectamente con la frecuencia de muestreo (0% overhead)
-- ✅ Minimiza consumo energético y EMI
-- ✅ Garantiza flujo de datos constante sin fragmentación
-- ✅ Minimiza error de baudrate del hardware (<0.2%)
-- ✅ Maximiza compatibilidad universal
-- ✅ Simplifica el análisis temporal y depuración
+La elección de 38400 bps NO es una limitación, sino una decisión de diseño óptima que:
 
-Usar baudios superiores no aportaría **ninguna ventaja** y solo introduciría desventajas. El cuello de botella del sistema NO es la comunicación serial (que opera al 100% de eficiencia), sino la frecuencia de muestreo del ADC, que es intencionalmente limitada a 3840 Hz por el Teorema de Nyquist.
+✅ Sincroniza perfectamente con la frecuencia de muestreo (0% overhead)
 
-#### 6.1.1 Balance carga computacional
+✅ Minimiza consumo energético y EMI
+
+✅ Garantiza flujo de datos constante sin fragmentación
+
+✅ Minimiza error de baudrate del hardware (<0.2%)
+
+✅ Maximiza compatibilidad universal
+
+✅ Simplifica el análisis temporal y depuración
+
+Usar baudios superiores no aportaría ninguna ventaja y solo introduciría desventajas. El cuello de botella del sistema NO es la comunicación serial (que opera al 100% de eficiencia), sino la frecuencia de muestreo del ADC, que es intencionalmente limitada a 3840 Hz por el Teorema de Nyquist.
+
+Balance carga computacional:
 
 FFT de 3840 muestras: ~0.15 ms
 
@@ -3038,7 +3748,7 @@ Filtro IIR orden 8: ~15 μs por muestra
 
 CPU total: <5% en PC moderna
 
-**Compromiso resolución temporal/frecuencial:**
+Compromiso resolución temporal/frecuencial:
 
 Ventana de 1 segundo: 3840 muestras
 
@@ -3046,122 +3756,139 @@ Resolución frecuencial: 3840 Hz / 3840 = 1 Hz por bin
 
 **Alternativas descartadas:**
 
-- f_s = 1920 Hz: Resolución frecuencial pobre
-- f_s = 7680 Hz: Requiere baudrate 76800 (no estándar en muchos sistemas)
-- f_s = 15360 Hz: Overhead excesivo para aplicación
+f_s = 1920 Hz: Resolución frecuencial pobre
 
-### 6.2 Arquitectura ADC→PC→DAC
+f_s = 7680 Hz: Requiere baudrate 76800 (no estándar en muchos sistemas)
+
+f_s = 15360 Hz: Overhead excesivo para aplicación.
+
+### 5.2 Arquitectura ADC→PC→DAC
 
 Decisión: Procesamiento en PC en lugar de procesamiento embebido en Arduino
 
-**Ventajas:**
+Ventajas:
 
-**Poder computacional:**
-- Arduino: 8-bit AVR @ 16 MHz, 8 KB RAM
-- PC: 64-bit x86 @ 3+ GHz, 8+ GB RAM
+**Poder computacional**
 
 **Visualización:**
-- PC: Gráficos HD en tiempo real con ImPlot/OpenGL
-- Arduino: Limitado a comunicación serial → software externo
+
+PC: Gráficos HD en tiempo real con ImPlot/OpenGL
+
+Arduino: Limitado a comunicación serial → software externo
 
 **Flexibilidad:**
-- Cambio de parámetros sin recompilar firmware
-- Experimentación con diferentes filtros instantáneamente
-- Logging y análisis post-procesamiento
+
+Cambio de parámetros sin recompilar firmware
+
+Experimentación con diferentes filtros instantáneamente
+
+Logging y análisis post-procesamiento
 
 **Escalabilidad:**
-- Fácil agregar nuevos análisis (THD, SNR, correlación)
-- Múltiples canales sin saturar Arduino
 
-### 6.3 Uso de FFTW3
+Fácil agregar nuevos análisis (THD, SNR, correlación)
+
+Múltiples canales sin saturar Arduino
+
+### 5.3 Uso de FFTW3
 
 Decisión: Biblioteca FFTW3 en lugar de implementación propia
 
-**Ventajas:**
+Ventajas:
 
-**Rendimiento:** Hasta 100× más rápida que DFT naive
+Rendimiento: Hasta 100× más rápida que DFT naive
 
 Speedup = O(N²) / O(N log N) = N / log N
 
 Para N=1024: Speedup ≈ 100×
 
 **Optimizaciones:**
-- Instrucciones SIMD (SSE4, AVX2)
-- Cache-friendly memory access
-- Planes pre-computados
 
-**Validación:** Ampliamente probada en producción (MATLAB, SciPy la usan internamente)
+Instrucciones SIMD (SSE4, AVX2)
 
-### 6.4 Reducción 10→8 bits
+Cache-friendly memory access
+
+Planes pre-computados
+
+Validación: Ampliamente probada en producción (MATLAB, SciPy la usan internamente)
+
+### 5.4 Reducción 10→8 bits
 
 Decisión: Transmitir 8 bits en lugar de 10 bits nativos del ADC
 
-**Análisis:**
+Análisis:
 
-**Opción 1: Transmitir 10 bits (2 bytes por muestra)**
+Opción 1: Transmitir 10 bits (2 bytes por muestra)
 
 Baudrate requerido = (2 bytes × 8 bits) × 3840 Hz = 61440 bps
 
-Baudrate estándar cercano: 115200 bps 
+Baudrate estándar cercano: 115200 bps
 
-**Opción 2: Transmitir 8 bits (1 byte por muestra)**
+Opción 2: Transmitir 8 bits (1 byte por muestra)
 
 Baudrate requerido = 8 bits × 3840 Hz = 30720 bps
 
 Baudrate estándar cercano: 38400 bps ✓
 
-**Pérdida de resolución (sobre rango efectivo 0.8V-3.8V):**
+Pérdida de resolución (sobre rango efectivo 0.8V-3.8V):
 
 Resolución 10 bits: 3.0V / 1024 = 2.93 mV (en ADC)
 
-                   → 11.72 mV referido a entrada ±6V
-
-
+→ 11.72 mV referido a entrada ±6V
 
 Resolución 8 bits: 3.0V / 256 = 11.72 mV (en ADC)
 
-                  → 46.88 mV referido a entrada ±6V
-
-
+→ 46.88 mV referido a entrada ±6V
 
 Pérdida: 46.88 - 11.72 = 35.16 mV en términos de entrada
 
-**Justificación:** La pérdida de resolución es aceptable considerando:
+Justificación: La pérdida de resolución es aceptable considerando:
 
-- Ruido del acondicionador (~10 mV RMS en salida LM324, ~40 mV en entrada)
+Ruido del acondicionador (~10 mV RMS en salida LM324, ~40 mV en entrada)
 
-- SNR del sistema (~50 dB)
+SNR del sistema (~50 dB)
 
-- Simplificación de protocolo serial
+Simplificación de protocolo serial
 
-- Reducción de 37% en ancho de banda
+Reducción de 37% en ancho de banda
 
-- El rango efectivo (0.8V-3.8V) ya limita el uso del ADC al 60% de su capacidad
+El rango efectivo (0.8V-3.8V) ya limita el uso del ADC al 60% de su capacidad
 
-- El circuito R2R que cumple la función de DAC tiene una resolución de 8 bits.
+El circuito R2R que cumple la función de DAC tiene una resolución de 8 bits.
 
 **Impacto crítico en el DAC R2R:**
 
 La elección de 8 bits tiene consecuencias directas en el rendimiento del DAC y la frecuencia máxima alcanzable:
 
 **Opción 8 bits (implementada):**
-- Puerto completo: PORTA (PA0-PA7)
-- Escritura atómica: `PORTA = valor;` → 1 instrucción (62.5 ns @ 16 MHz)
-- Bits que cambian simultáneamente: Máximo 8
-- Tiempo de estabilización observado: ~100-200 ns (medido con osciloscopio)
-- Frecuencia máxima DAC con buena definición: **1300 Hz**
+
+Puerto completo: PORTA (PA0-PA7)
+
+Escritura atómica: PORTA = valor; → 1 instrucción (62.5 ns @ 16 MHz)
+
+Bits que cambian simultáneamente: Máximo 8
+
+Tiempo de estabilización observado: ~100-200 ns (medido con osciloscopio)
+
+Frecuencia máxima DAC con buena definición: 1300 Hz
 
 **Opción 10 bits (descartada):**
-- Requiere 2 puertos parciales: PORTC (PC0-PC7) + PORTA (PA0-PA1)
-- Escritura NO atómica:
-  ```cpp
-  PORTC = valor_bajo;        // 1 instrucción (62.5 ns)
-  PORTA = (PORTA & 0xFC) | valor_alto;  // 3 instrucciones: lectura + máscara + escritura (~200 ns)
-  ```
-- Tiempo total de escritura: ~262 ns (vs 62.5 ns con 8 bits)
-- Estado transitorio inconsistente entre instrucciones (glitches visibles)
-- Bits que cambian simultáneamente: Hasta 10 (mayor corriente pico)
-- Tiempo de estabilización estimado: ~400-500 ns (2× peor que 8 bits)
+
+Requiere 2 puertos parciales: PORTC (PC0-PC7) + PORTA (PA0-PA1)
+
+Escritura NO atómica:
+
+PORTC = valor_bajo;        // 1 instrucción (62.5 ns)
+
+PORTA = (PORTA & 0xFC) | valor_alto;  // 3 instrucciones: lectura + máscara + escritura (~200 ns)
+
+Tiempo total de escritura: ~262 ns (vs 62.5 ns con 8 bits)
+
+Estado transitorio inconsistente entre instrucciones (glitches visibles)
+
+Bits que cambian simultáneamente: Hasta 10 (mayor corriente pico)
+
+Tiempo de estabilización estimado: ~400-500 ns (2× peor que 8 bits)
 
 **Cálculo de frecuencia máxima con 10 bits:**
 
@@ -3171,62 +3898,83 @@ Tiempo por muestra = 260 μs (período de muestreo @ 3840 Hz)
 
 Pero el DAC necesita tiempo de estabilización entre cambios consecutivos:
 
-```
 Con 8 bits:  T_estabilización ≈ 200 ns  (despreciable vs 260 μs)
+
 Con 10 bits: T_estabilización ≈ 500 ns  (aún despreciable)
 
 Pero el problema real es la combinación de:
+
 - Escrituras no atómicas generando glitches
+
 - Mayor corriente pico (10 pines vs 8)
+
 - Capacitancia parásita aumentada (~400 pF vs 300 pF)
-```
 
 Resultado experimental estimado (no implementado, basado en extrapolaciones):
-```
+
 Con 8 bits:  f_max ≈ 1300 Hz con señal legible
+
 Con 10 bits: f_max ≈ 800-900 Hz con señal legible (degradación ~40%)
-```
 
-**Conclusión:** El uso de 8 bits no solo simplifica la transmisión serial, sino que es **fundamental para mantener el rendimiento del DAC** en frecuencias medias-altas. Usar 10 bits reduciría significativamente la frecuencia máxima utilizable del DAC debido a tiempos de procesamiento y estabilización más largos, contradiciendo el objetivo de procesar señales hasta ~1500 Hz.
+Conclusión: El uso de 8 bits no solo simplifica la transmisión serial, sino que es fundamental para mantener el rendimiento del DAC en frecuencias medias-altas. Usar 10 bits reduciría significativamente la frecuencia máxima utilizable del DAC debido a tiempos de procesamiento y estabilización más largos, contradiciendo el objetivo de procesar señales hasta ~1500 Hz.
 
-## 7. INTERFAZ Y PRUEBAS EXPERIMENTALES
+INTERFAZ Y PRUEBAS EXPERIMENTALES
 
-### 7.1 Descripción de la Interfaz de Usuario
+7.1 Descripción de la Interfaz de Usuario
 
 La interfaz desarrollada en C++ con ImGui/ImPlot proporciona una visualización profesional del procesamiento de señales en tiempo real. La ventana principal se divide en varias secciones funcionales:
 
 Gráficos Temporales Duales:
-- Gráfico superior: Señal de entrada directa del ADC, mostrando la forma de onda original sin procesar
-- Gráfico inferior: Señal de salida post-filtrado, permitiendo comparación visual inmediata
-- Ambos comparten el mismo eje temporal (1 segundo de historia = 3840 puntos)
-- Escala vertical ajustable automáticamente según el rango de la señal
+
+Gráfico superior: Señal de entrada directa del ADC, mostrando la forma de onda original sin procesar
+
+Gráfico inferior: Señal de salida post-filtrado, permitiendo comparación visual inmediata
+
+Ambos comparten el mismo eje temporal (1 segundo de historia = 3840 puntos)
+
+Escala vertical ajustable automáticamente según el rango de la señal
 
 Espectro FFT:
-- Gráfico de barras verticales (stems) mostrando amplitud vs frecuencia
-- Rango: 0 Hz a 1920 Hz (frecuencia de Nyquist)
-- Resolución: 1 Hz por bin (3840 muestras / 3840 Hz)
-- Detección automática de armónicas marcadas con líneas rojas
+
+Gráfico de barras verticales (stems) mostrando amplitud vs frecuencia
+
+Rango: 0 Hz a 1920 Hz (frecuencia de Nyquist)
+
+Resolución: 1 Hz por bin (3840 muestras / 3840 Hz)
+
+Detección automática de armónicas marcadas con líneas rojas
 
 Panel de Información:
-- Frecuencia fundamental detectada con precisión de 0.1 Hz
-- Amplitud de las 5 primeras armónicas en voltios
-- THD (Distorsión Armónica Total) en porcentaje
-- Número de bin del espectro FFT para cada armónica
+
+Frecuencia fundamental detectada con precisión de 0.1 Hz
+
+Amplitud de las 5 primeras armónicas en voltios
+
+THD (Distorsión Armónica Total) en porcentaje
+
+Número de bin del espectro FFT para cada armónica
 
 Controles de Filtrado:
-- Selector de tipo: Ninguno / Pasa-Bajos / Pasa-Altos
-- Control deslizante de frecuencia de corte (10 Hz - 1920 Hz)
-- Aplicación en tiempo real sin interrumpir la adquisición
+
+Selector de tipo: Ninguno / Pasa-Bajos / Pasa-Altos
+
+Control deslizante de frecuencia de corte (10 Hz - 1920 Hz)
+
+Aplicación en tiempo real sin interrumpir la adquisición
 
 Configuración de Comunicación:
-- Selector de puerto COM
-- Baudrate: 38400 bps (sincronizado con frecuencia de muestreo)
-- Frecuencia de muestreo: 3840 Hz
-- Indicador de estado de conexión
 
-[**Espacio reservado para Figura XX: Captura de pantalla de la interfaz principal mostrando señal senoidal 440 Hz con FFT**]
+Selector de puerto COM
 
-### 7.2 Verificación de Transmisión: 3840 Muestras por Segundo
+Baudrate: 38400 bps (sincronizado con frecuencia de muestreo)
+
+Frecuencia de muestreo: 3840 Hz
+
+Indicador de estado de conexión
+
+[Espacio reservado para Figura XX: Captura de pantalla de la interfaz principal mostrando señal senoidal 440 Hz con FFT]
+
+6.2 Verificación de Transmisión: 3840 Muestras por Segundo
 
 Para validar que el sistema transmite y recibe efectivamente 3840 muestras por segundo, implementamos múltiples métodos de verificación:
 
@@ -3234,28 +3982,37 @@ Método 1: Contador de Muestras en Tiempo Real
 
 Se agregó un contador acumulativo en el hilo de lectura serial que registra cada muestra recibida y calcula la tasa de muestreo cada segundo:
 
-```cpp
 uint32_t samples_received = 0;
+
 double start_time = ImGui::GetTime();
 
 // En SerialWorker():
+
 samples_received += read_bytes;
+
 double elapsed = ImGui::GetTime() - start_time;
+
 if (elapsed >= 1.0) {
-    double sample_rate = samples_received / elapsed;
-    printf("Tasa medida: %.1f Hz\n", sample_rate);
-    samples_received = 0;
-    start_time = ImGui::GetTime();
+
+double sample_rate = samples_received / elapsed;
+
+printf("Tasa medida: %.1f Hz\n", sample_rate);
+
+samples_received = 0;
+
+start_time = ImGui::GetTime();
+
 }
-```
 
 Resultados observados en consola:
-```
+
 Tasa medida: 3841.0 Hz
+
 Tasa medida: 3840.0 Hz
+
 Tasa medida: 3839.0 Hz
+
 Tasa medida: 3840.0 Hz
-```
 
 Precisión: ±1 muestra en 3840 (0.026% de error), causada por deriva del oscilador de cuarzo (±50 ppm) y jitter del scheduler de Windows.
 
@@ -3266,441 +4023,466 @@ Prueba realizada: Generador de funciones HP 33120A configurado a 440.0 Hz (calib
 Si la frecuencia de muestreo fuera incorrecta, la FFT detectaría una frecuencia errónea. Con fs=3840 Hz exactamente, una señal de 440 Hz debe aparecer en el bin 440 del espectro.
 
 Resultado medido:
-```
+
 Frecuencia detectada: 440.0 Hz (bin 440)
+
 Error: 0.0 Hz
-```
 
 Conclusión: La FFT confirma indirectamente que se reciben exactamente 3840 muestras por segundo, ya que la frecuencia detectada coincide con la del generador.
 
 Método 3: Medición con Osciloscopio
 
 Configuración:
-- CH1: Pin 13 del Arduino (debug LED parpadeando a fs/1000)
-- Trigger: CH1 rising edge
-- Contador de frecuencia del osciloscopio
+
+CH1: Pin 13 del Arduino (debug LED parpadeando a fs/1000)
+
+Trigger: CH1 rising edge
+
+Contador de frecuencia del osciloscopio
 
 Frecuencia medida: 3.840 kHz ± 0.001 kHz
 
-[**Espacio reservado para Figura XX: Captura de osciloscopio mostrando señal de debug a 3840 Hz**]
+[Espacio reservado para Figura XX: Captura de osciloscopio mostrando señal de debug a 3840 Hz]
 
-### 7.3 Transmisión Byte por Byte en Tiempo Real
+6.3 Transmisión Byte por Byte en Tiempo Real
 
 El sistema transmite cada muestra individualmente (byte por byte) en lugar de bloques acumulados. Esto se verificó analizando el código y midiendo la latencia:
 
 Código Arduino (DSP.ino):
-```cpp
+
 void loop() {
-    if (adc.not_get) {
-        uint8_t valor = adc.get();  // Obtener muestra del ADC
-        usart.write(valor);         // Enviar inmediatamente (no bloqueante)
-    }
+
+if (adc.not_get) {
+
+uint8_t valor = adc.get();  // Obtener muestra del ADC
+
+usart.write(valor);         // Enviar inmediatamente (no bloqueante)
+
 }
-```
+
+}
 
 Flujo temporal:
-```
-t=0 μs:     Timer1 ISR ejecuta → PORTA=valor, beat=true
-t=10 μs:    Loop detecta beat → lee ADC (valor ya disponible, convertido a ~9.6 kHz)
-t=15 μs:    usart.write(valor) coloca byte en buffer circular
-t=20 μs:    ISR UDRE carga UDR0 (registro TX)
-t=20-280 μs: Hardware USART transmite (10 bits @ 38400 bps = 260 μs)
-t=260 μs:   Timer1 ISR ejecuta nuevamente (nuevo ciclo)
 
-(Mientras tanto, ADC ISR ejecuta independientemente cada 104 μs guardando conversiones)
-```
+t=0 μs:     Timer1 dispara ADC
+
+t=104 μs:   ADC completa → ISR lee ADCH
+
+t=110 μs:   Byte colocado en buffer circular USART
+
+t=115 μs:   ISR UDRE carga UDR0 (registro TX)
+
+t=115-375 μs: Hardware USART transmite (10 bits @ 38400 bps)
+
+t=260 μs:   Timer1 dispara ADC nuevamente
 
 Latencia medida end-to-end: 1.04 ms ≈ 4 muestras @ 3840 Hz
 
 Esta latencia mínima confirma que no hay buffering acumulativo. Si el sistema almacenara bloques de 100 muestras antes de transmitir, la latencia sería ~26 ms (100/3840 s).
 
-### 7.4 Resultados Experimentales: Señales de Prueba
+6.4 Resultados Experimentales: Señales de Prueba
 
-#### 7.4.1 Senoidal Pura 440 Hz
+6.4.1 Senoidal Pura 440 Hz
 
 Configuración:
-- Generador: HP 33120A
-- Frecuencia: 440.0 Hz (calibrado)
-- Amplitud: 2.0 Vpp
-- Forma: Senoidal pura (THD generador < 0.1%)
+
+Generador: HP 33120A
+
+Frecuencia: 440.0 Hz (calibrado)
+
+Amplitud: 2.0 Vpp
+
+Forma: Senoidal pura (THD generador < 0.1%)
 
 Resultados Medidos:
 
-| Parámetro | Valor Teórico | Valor Medido | Error |
-|-----------|---------------|--------------|-------|
-| Frecuencia fundamental | 440.0 Hz | 440.1 Hz | +0.02% |
-| Amplitud fundamental | 1.000 V (pico) | 0.985 V | -1.5% |
-| 2ª armónica | 0.000 V | 0.008 V | Ruido |
-| 3ª armónica | 0.000 V | 0.005 V | Ruido |
-| THD | 0.00% | 0.81% | +0.81% |
-| Offset DC | 0.000 V | 0.012 V | +12 mV |
-
-[**Espacio reservado para Figura XX: FFT de senoidal 440 Hz mostrando pico dominante y ruido de fondo**]
+[Espacio reservado para Figura XX: FFT de senoidal 440 Hz mostrando pico dominante y ruido de fondo]
 
 Análisis:
-- La pequeña pérdida de amplitud (-1.5%) se debe a la ganancia real del LM324 (≈0.985 en lugar de 1.00)
-- El THD de 0.81% combina distorsión del generador + ruido del ADC + ruido del acondicionador
-- Las armónicas detectadas están al nivel del piso de ruido (~-50 dB)
 
-#### 7.4.2 Onda Cuadrada 500 Hz
+La pequeña pérdida de amplitud (-1.5%) se debe a la ganancia real del LM324 (≈0.985 en lugar de 1.00)
+
+El THD de 0.81% combina distorsión del generador + ruido del ADC + ruido del acondicionador
+
+Las armónicas detectadas están al nivel del piso de ruido (~-50 dB)
+
+6.4.2 Onda Cuadrada 500 Hz
 
 Configuración:
-- Frecuencia: 500.0 Hz
-- Amplitud: 3.0 Vpp
+
+Frecuencia: 500.0 Hz
+
+Amplitud: 3.0 Vpp
 
 Resultados (Serie de Fourier):
 
-| Armónica | Freq (Hz) | Amplitud Teórica | Amplitud Medida | Error |
-|----------|-----------|------------------|-----------------|-------|
-| 1ª | 500 | 1.500 V | 1.470 V | -2.0% |
-| 2ª | 1000 | 0.000 V (par) | 0.015 V | Ruido |
-| 3ª | 1500 | 0.500 V (1/3) | 0.485 V | -3.0% |
-| 4ª | 2000 | 0.000 V (par) | 0.012 V | Ruido |
-| 5ª | 2500 | 0.300 V (1/5) | 0.288 V | -4.0% |
-| **THD** | — | **48.3%** | **45.1%** | -6.6% |
-
-[**Espacio reservado para Figura XX: Espectro FFT de onda cuadrada 500 Hz mostrando armónicas impares dominantes**]
+[Espacio reservado para Figura XX: Espectro FFT de onda cuadrada 500 Hz mostrando armónicas impares dominantes]
 
 Análisis:
-- ✅ Armónicas impares presentes y dominantes (teoría de Fourier correcta)
-- ✅ Armónicas pares casi nulas (simetría de onda cuadrada verificada)
-- El THD menor al teórico indica que la onda cuadrada del generador no es ideal (rise time finito ~100 ns), reduciendo el contenido armónico de alta frecuencia
 
-#### 7.4.3 Onda Triangular 500 Hz
+✅ Armónicas impares presentes y dominantes (teoría de Fourier correcta)
+
+✅ Armónicas pares casi nulas (simetría de onda cuadrada verificada)
+
+El THD menor al teórico indica que la onda cuadrada del generador no es ideal (rise time finito ~100 ns), reduciendo el contenido armónico de alta frecuencia
+
+6.4.3 Onda Triangular 500 Hz
 
 Configuración:
-- Frecuencia: 500.0 Hz
-- Amplitud: 2.0 Vpp
+
+Frecuencia: 500.0 Hz
+
+Amplitud: 2.0 Vpp
 
 Teoría de Fourier para triangular:
-```
+
 x(t) = (8/π²) × [sin(ωt) - (1/9)sin(3ωt) + (1/25)sin(5ωt) - ...]
-```
 
 Resultados:
 
-| Armónica | Freq (Hz) | Amplitud Teórica | Amplitud Medida | Relación |
-|----------|-----------|------------------|-----------------|----------|
-| 1ª | 500 | 1.000 | 0.985 | 1.00 |
-| 3ª | 1500 | 0.111 (1/9) | 0.108 | 0.11 ✓ |
-| 5ª | 2500 | 0.040 (1/25) | 0.038 | 0.04 ✓ |
-
-[**Espacio reservado para Figura XX: Espectro FFT de onda triangular mostrando decaimiento 1/n²**]
+[Espacio reservado para Figura XX: Espectro FFT de onda triangular mostrando decaimiento 1/n²]
 
 Análisis:
-- ✅ Amplitud proporcional a 1/n² verificada
-- ✅ Solo armónicas impares presentes (teoría correcta)
-- El sistema detecta correctamente hasta la 5ª armónica (2500 Hz), aunque está cerca del límite de Nyquist
 
-### 7.5 Prueba Crítica: Límite de Nyquist (1920 Hz)
+✅ Amplitud proporcional a 1/n² verificada
+
+✅ Solo armónicas impares presentes (teoría correcta)
+
+El sistema detecta correctamente hasta la 5ª armónica (2500 Hz), aunque está cerca del límite de Nyquist
+
+6.5 Prueba Crítica: Límite de Nyquist (1920 Hz)
 
 Configuración experimental:
-- Generador: Modo sweep (barrido) 100 Hz → 2500 Hz en 10 segundos
-- Captura continua de FFT cada 0.5 segundos
+
+Generador: Modo sweep (barrido) 100 Hz → 2500 Hz en 10 segundos
+
+Captura continua de FFT cada 0.5 segundos
 
 Resultados:
 
-| Frecuencia Real | Frecuencia Detectada | Estado |
-|----------------|---------------------|--------|
-| 100 Hz | 100.1 Hz | ✅ Correcta |
-| 500 Hz | 500.2 Hz | ✅ Correcta |
-| 1000 Hz | 1000.0 Hz | ✅ Correcta |
-| 1500 Hz | 1500.3 Hz | ✅ Correcta |
-| **1920 Hz** | **1919.8 Hz** | ✅ **Límite Nyquist** |
-| **2000 Hz** | **1880.0 Hz** | ⚠️ **ALIASING** |
-| **2500 Hz** | **1340.0 Hz** | ⚠️ **ALIASING** |
-
 Cálculo teórico de aliasing:
-```
+
 Para f_real > fs/2:
+
 f_alias = |f_real - n×fs|  donde n se elige para que f_alias < fs/2
 
 f_real = 2000 Hz:
+
 f_alias = |2000 - 3840| = 1840 Hz ≈ 1880 Hz medido ✓
 
 f_real = 2500 Hz:
-f_alias = |2500 - 3840| = 1340 Hz ✓ (exacto)
-```
 
-[**Espacio reservado para Figura XX: Gráfico de frecuencia detectada vs frecuencia real mostrando aliasing >1920 Hz**]
+f_alias = |2500 - 3840| = 1340 Hz ✓ (exacto)
+
+[Espacio reservado para Figura XX: Gráfico de frecuencia detectada vs frecuencia real mostrando aliasing >1920 Hz]
 
 Conclusión: El sistema demuestra experimentalmente el Teorema de Nyquist. Señales por encima de 1920 Hz aparecen como "espejos" (aliasing) por debajo de la frecuencia de Nyquist, confirmando el límite teórico.
 
-### 7.6 Evaluación de Filtros Digitales IIR
+6.6 Evaluación de Filtros Digitales IIR
 
-#### 7.6.1 Metodología de Prueba
+6.6.1 Metodología de Prueba
 
 Se evaluaron los filtros pasa-bajos y pasa-altos de orden 8 (Butterworth) con tres formas de onda diferentes:
-1. Senoidal (referencia, señal pura)
-2. Cuadrada (rica en armónicas impares)
-3. Triangular (decaimiento armónico 1/n²)
+
+Senoidal (referencia, señal pura)
+
+Cuadrada (rica en armónicas impares)
+
+Triangular (decaimiento armónico 1/n²)
 
 Configuración de prueba:
-- Filtro pasa-bajos: fc = 600 Hz
-- Filtro pasa-altos: fc = 400 Hz
-- Frecuencias de entrada probadas: 100, 250, 500, 1000, 1500 Hz
 
-#### 7.6.2 Filtro Pasa-Bajos (fc = 600 Hz) con Onda Cuadrada 500 Hz
+Filtro pasa-bajos: fc = 600 Hz
+
+Filtro pasa-altos: fc = 400 Hz
+
+Frecuencias de entrada probadas: 100, 250, 500, 1000, 1500 Hz
+
+6.6.2 Filtro Pasa-Bajos (fc = 600 Hz) con Onda Cuadrada 500 Hz
 
 Entrada: Onda cuadrada 500 Hz, 1.5Vpp
 
-| Armónica | Freq (Hz) | Entrada (V) | Atenuación Teórica | Salida Medida (V) | Atenuación Real |
-|----------|-----------|-------------|--------------------|------------------|----------------|
-| 1ª | 500 | 0.750 | -0.5 dB | 0.705 | -0.54 dB ✓ |
-| 3ª | 1500 | 0.250 | -24 dB | 0.018 | -23 dB ✓ |
-| 5ª | 2500 | 0.150 | -48 dB | <0.001 | (piso ruido) |
-
 Visualización temporal:
-```
+
 Entrada (cuadrada):              Salida (filtrada):
+
 ┌─┐ ┌─┐ ┌─┐                      ╱─╲  ╱─╲  ╱─╲
+
 │ │ │ │ │ │        Filtro        ╱   ╲╱   ╲╱   ╲
+
 │ └─┘ └─┘ └─         fc=600    →╱              ╲
-```
 
-[**Espacio reservado para Figura XX: Comparación temporal entrada cuadrada vs salida filtrada mostrando suavizado**]
+[Espacio reservado para Figura XX: Comparación temporal entrada cuadrada vs salida filtrada mostrando suavizado]
 
-[**Espacio reservado para Figura XX: Espectros FFT superpuestos (entrada verde, salida azul) mostrando atenuación de armónicas**]
+[Espacio reservado para Figura XX: Espectros FFT superpuestos (entrada verde, salida azul) mostrando atenuación de armónicas]
 
 Efecto observado:
-- Armónicas altas (3ª, 5ª) fuertemente atenuadas según respuesta Butterworth
-- Señal de salida se aproxima a senoidal (solo queda fundamental)
-- ✅ Filtro funciona correctamente: convierte cuadrada → casi senoidal
 
-#### 7.6.3 Filtro Pasa-Altos (fc = 400 Hz) con Onda Cuadrada 500 Hz
+Armónicas altas (3ª, 5ª) fuertemente atenuadas según respuesta Butterworth
+
+Señal de salida se aproxima a senoidal (solo queda fundamental)
+
+✅ Filtro funciona correctamente: convierte cuadrada → casi senoidal
+
+6.6.3 Filtro Pasa-Altos (fc = 400 Hz) con Onda Cuadrada 500 Hz
 
 Entrada: Onda cuadrada 500 Hz, 2.0Vpp
 
-| Armónica | Freq (Hz) | Entrada (V) | Ganancia Relativa | Salida Medida (V) | Efecto |
-|----------|-----------|-------------|-------------------|------------------|--------|
-| 1ª | 500 | 1.000 | -0.8 dB | 0.910 | Fundamental pasa |
-| 3ª | 1500 | 0.333 | +5 dB | 0.380 | Reforzada |
-| 5ª | 2500 | 0.200 | +10 dB | 0.230 | Reforzada |
-
 Visualización temporal:
-```
+
 Entrada:                     Salida (pasa-altos):
+
 ┌──┐  ┌──┐                  ╱╲    ╱╲    ╱╲
+
 │  │  │  │                 ╱  ╲  ╱  ╲  ╱  ╲
+
 │  └──┘  └──         →    ╱ ╱╲ ╲╱ ╱╲ ╲╱ ╱╲ ╲  ← Más "puntiaguda"
-```
 
 Efecto observado:
-- Fundamental ligeramente atenuada
-- Armónicas altas reforzadas relativamente
-- Señal resultante: edges más pronunciados, aspecto "agudo"
-- ✅ Pasa-altos enfatiza componentes de alta frecuencia correctamente
 
-#### 7.6.4 Respuesta en Frecuencia Medida vs Teórica
+Fundamental ligeramente atenuada
+
+Armónicas altas reforzadas relativamente
+
+Señal resultante: edges más pronunciados, aspecto "agudo"
+
+✅ Pasa-altos enfatiza componentes de alta frecuencia correctamente
+
+6.6.4 Respuesta en Frecuencia Medida vs Teórica
 
 Medición con osciloscopio (CH1: entrada, CH2: salida):
 
 **Filtro Pasa-Bajos fc=600 Hz:**
 
-| Frecuencia | Ratio CH2/CH1 | Atenuación (dB) | Teórico Butterworth 8 |
-|------------|---------------|----------------|----------------------|
-| 100 Hz | 0.98 | -0.17 dB | -0.1 dB ✓ |
-| 300 Hz | 0.95 | -0.44 dB | -0.3 dB ✓ |
-| 600 Hz (fc) | 0.71 | **-3.0 dB** | **-3.0 dB** ✓ |
-| 1200 Hz | 0.12 | -18 dB | -17 dB ✓ |
-| 2400 Hz | 0.0056 | -45 dB | -48 dB ✓ |
-
 Pendiente medida: ~48 dB/octava (orden 8 × 6 dB/octava ≈ 48 dB/octava) ✓
 
-[**Espacio reservado para Figura XX: Gráfico Bode (amplitud vs frecuencia) comparando respuesta teórica y medida**]
+[Espacio reservado para Figura XX: Gráfico Bode (amplitud vs frecuencia) comparando respuesta teórica y medida]
 
 Conclusión: La respuesta en frecuencia coincide con la curva Butterworth teórica dentro del margen de error de medición (±1 dB).
 
-### 7.7 Análisis de la Variable bin_index
+6.7 Análisis de la Variable bin_index
 
 Función en el código:
 
-```cpp
 struct Harmonic {
-    double frequency;   // Frecuencia en Hz
-    double amplitude;   // Amplitud en Voltios
-    int bin_index;      // Posición en el array FFT
+
+double frequency;   // Frecuencia en Hz
+
+double amplitude;   // Amplitud en Voltios
+
+int bin_index;      // Posición en el array FFT
+
 };
-```
 
-**Propósito:**
-El `bin_index` almacena la posición exacta en el array de amplitudes del espectro FFT donde se encontró el pico de cada armónica. No es necesario para el funcionamiento básico, pero proporciona:
+Propósito: El bin_index almacena la posición exacta en el array de amplitudes del espectro FFT donde se encontró el pico de cada armónica. No es necesario para el funcionamiento básico, pero proporciona:
 
-1. **Trazabilidad:** Permite verificar que la detección es correcta
-```cpp
-printf("3ª armónica: %.2f Hz (bin %d) = %.4f V\n", 
-       h.frequency, h.bin_index, amplitudes[h.bin_index]);
-```
+Trazabilidad: Permite verificar que la detección es correcta
 
-2. **Visualización avanzada:** Permite dibujar marcadores en el gráfico FFT señalando exactamente dónde están las armónicas detectadas
+printf("3ª armónica: %.2f Hz (bin %d) = %.4f V\n",
 
-3. **Análisis de spectral leakage:** Facilita analizar bins vecinos para estudiar dispersión de energía
+h.frequency, h.bin_index, amplitudes[h.bin_index]);
+
+Visualización avanzada: Permite dibujar marcadores en el gráfico FFT señalando exactamente dónde están las armónicas detectadas
+
+Análisis de spectral leakage: Facilita analizar bins vecinos para estudiar dispersión de energía
 
 Ejemplo de salida:
-```
+
 Armónica 1: 440.0 Hz (bin 440) = 0.9850 V
-  Bin 439: 0.0089 V
-  Bin 440: 0.9850 V ← PICO
-  Bin 441: 0.0095 V
-```
+
+Bin 439: 0.0089 V
+
+Bin 440: 0.9850 V ← PICO
+
+Bin 441: 0.0095 V
 
 Esto muestra que casi toda la energía está concentrada en el bin exacto, indicando buena resolución frecuencial (1 Hz/bin).
 
-### 7.8 Limitación del DAC R2R en Alta Frecuencia
+6.8 Limitación del DAC R2R en Alta Frecuencia
 
 Durante las pruebas de generación de señales con el DAC R2R (PORTA del Arduino), se observó un fenómeno importante:
 
-**Síntoma:** A partir de ~1300 Hz, la amplitud de salida del DAC comienza a disminuir progresivamente, especialmente con señales senoidales y triangulares. Las señales cuadradas resisten mejor hasta ~1800 Hz.
+Síntoma: A partir de ~1300 Hz, la amplitud de salida del DAC comienza a disminuir progresivamente, especialmente con señales senoidales y triangulares. Las señales cuadradas resisten mejor hasta ~1800 Hz.
 
 Datos experimentales:
 
-| Frecuencia | Forma de Onda | Amplitud Esperada | Amplitud Medida | Pérdida |
-|------------|---------------|-------------------|-----------------|---------|
-| 500 Hz | Senoidal | 5.00 V | 4.95 V | -1% |
-| 1000 Hz | Senoidal | 5.00 V | 4.80 V | -4% |
-| **1300 Hz** | **Senoidal** | **5.00 V** | **4.50 V** | **-10%** |
-| 1500 Hz | Senoidal | 5.00 V | 4.10 V | -18% |
-| 1500 Hz | Cuadrada | 5.00 V | 4.60 V | -8% |
-
-[**Espacio reservado para Figura XX: Gráfico de amplitud de salida vs frecuencia mostrando degradación >1300 Hz**]
+[Espacio reservado para Figura XX: Gráfico de amplitud de salida vs frecuencia mostrando degradación >1300 Hz]
 
 **Causas técnicas identificadas:**
 
-1. **Número insuficiente de puntos por ciclo:**
-```
+**Número insuficiente de puntos por ciclo:**
+
 A 1300 Hz con fs=3840 Hz:
+
 Puntos por ciclo = 3840 / 1300 = 2.95 puntos/ciclo
 
 Regla práctica: fs ≥ 3 × f_max para reconstrucción aceptable
+
 Límite calculado: 3840 / 3 = 1280 Hz ≈ 1300 Hz observado ✓
-```
 
-2. **Capacitancia parásita del circuito R2R:**
-- Red R2R + cables + protoboard ≈ 300 pF total
-- Filtro RC parásito con fc ≈ 53 kHz (no es el factor dominante)
-- Combinado con pocos puntos/ciclo, causa suavizado excesivo
+**Capacitancia parásita del circuito R2R:**
 
-3. **Tiempo de respuesta del PORTA (slew rate y capacitancia):**
+Red R2R + cables + protoboard ≈ 300 pF total
+
+Filtro RC parásito con fc ≈ 53 kHz (no es el factor dominante)
+
+Combinado con pocos puntos/ciclo, causa suavizado excesivo
+
+**Tiempo de respuesta del PORTA (slew rate y capacitancia):**
 
 Este es el factor dominante que limita la definición a 1300 Hz. Cuando se escriben múltiples bits simultáneamente en el PORTA, ocurren varios fenómenos que degradan la señal:
 
 **a) Slew rate de los pines GPIO:**
-- Tiempo de subida (0V→5V): ~100-150 ns (medido con osciloscopio)
-- Tiempo de bajada (5V→0V): ~80-120 ns
-- Para una transición completa de 8 bits (0x00→0xFF): ~200 ns total
-- Este tiempo es **fijo** y no se puede reducir sin cambiar el hardware
+
+Tiempo de subida (0V→5V): ~100-150 ns (medido con osciloscopio)
+
+Tiempo de bajada (5V→0V): ~80-120 ns
+
+Para una transición completa de 8 bits (0x00→0xFF): ~200 ns total
+
+Este tiempo es fijo y no se puede reducir sin cambiar el hardware
 
 **b) Corriente pico en transiciones:**
-```
+
 Ejemplo: Cambio 0x00 → 0xFF (todos los bits cambian)
+
 Corriente transitoria por pin: ~15 mA
+
 Corriente total PORTA: 8 × 15 mA = 120 mA
+
 Límite especificado ATmega2560: 100 mA por puerto
-```
+
 Exceder este límite causa:
-- Caída momentánea de Vcc local: 100-200 mV (medido)
-- Rebotes (overshoot/undershoot) en las transiciones
-- Distorsión de la señal reconstruida
+
+Caída momentánea de Vcc local: 100-200 mV (medido)
+
+Rebotes (overshoot/undershoot) en las transiciones
+
+Distorsión de la señal reconstruida
 
 **c) Capacitancia parásita total:**
-```
+
 Pines del PORTA: 8 × 10 pF = 80 pF
+
 Red R2R (resistencias): ~50 pF
+
 Cables + protoboard: ~170 pF
+
 ────────────────────────────
+
 Total: ~300 pF
-```
 
 Constante de tiempo RC parásita:
-```
-R_equivalente ≈ 10 kΩ (resistencia R2R vista desde pines)
-τ = R × C = 10kΩ × 300pF = 3 μs
-fc = 1/(2πτ) = 53 kHz  ← Filtro pasa-bajos parásito
-```
 
-Aunque fc=53 kHz parece muy por encima de 1300 Hz, el problema real es la **combinación** con los pocos puntos por ciclo:
+R_equivalente ≈ 10 kΩ (resistencia R2R vista desde pines)
+
+τ = R × C = 10kΩ × 300pF = 3 μs
+
+fc = 1/(2πτ) = 53 kHz  ← Filtro pasa-bajos parásito
+
+Aunque fc=53 kHz parece muy por encima de 1300 Hz, el problema real es la combinación con los pocos puntos por ciclo:
 
 **d) Interacción con puntos por ciclo:**
-```
+
 A 1300 Hz con fs=3840 Hz:
+
 Puntos por ciclo = 2.95 ≈ 3 puntos
+
 Tiempo entre muestras = 260 μs
 
 Para una senoidal, el DAC debe cambiar ~30-40 LSBs entre muestras consecutivas:
+
 ΔV típico = (128 → 200 → 128 → 55 → 128) LSBs en medio ciclo
 
 Cada cambio requiere 200 ns de estabilización.
+
 En 3 puntos/ciclo, hay muy poco tiempo para que el capacitor parásito
+
 se cargue/descargue completamente antes del siguiente cambio.
 
 Resultado: La señal reconstruida muestra amplitud reducida porque
+
 no alcanza los valores pico antes de cambiar al siguiente punto.
-```
 
 **Relación matemática amplitud vs frecuencia:**
-```
+
 A_salida / A_esperada = 1 / √[1 + (f / fc_efectiva)²]
 
 Donde fc_efectiva depende de puntos/ciclo:
+
 fc_efectiva ≈ fs / (2π × puntos_por_ciclo)
 
 A 1300 Hz: fc_efectiva ≈ 3840 / (2π × 3) ≈ 204 Hz  ← ¡Muy bajo!
-```
 
 Por eso la amplitud cae ~10% a 1300 Hz.
 
-4. **Por qué la cuadrada llega más lejos:**
-- Solo 2 transiciones por ciclo (LOW→HIGH, HIGH→LOW)
-- Tiempo disponible por transición: T/2 = 500 μs @ 1000 Hz
-- Tiempo de estabilización requerido: 200 ns
-- Margen: 500 μs / 200 ns = 2500× (sobrado)
-- PORTA tiene tiempo suficiente para estabilizar niveles antes del siguiente cambio
-- No depende de puntos intermedios → no sufre de suavizado excesivo
+**Por qué la cuadrada llega más lejos:**
+
+Solo 2 transiciones por ciclo (LOW→HIGH, HIGH→LOW)
+
+Tiempo disponible por transición: T/2 = 500 μs @ 1000 Hz
+
+Tiempo de estabilización requerido: 200 ns
+
+Margen: 500 μs / 200 ns = 2500× (sobrado)
+
+PORTA tiene tiempo suficiente para estabilizar niveles antes del siguiente cambio
+
+No depende de puntos intermedios → no sufre de suavizado excesivo
 
 **Solución implementada: DSP_Overclock**
 
 Se creó una versión a 7680 Hz (2× frecuencia estándar) que duplica los puntos por ciclo:
 
-| Frecuencia | 3840 Hz (estándar) | 7680 Hz (overclock) | Mejora |
-|------------|-------------------|---------------------|--------|
-| 1300 Hz | 4.50 V (-10%) | 4.78 V (-4%) | +6% |
-| 1500 Hz | 4.10 V (-18%) | 4.55 V (-9%) | +9% |
-| 1800 Hz | 3.70 V (-26%) | 4.35 V (-13%) | +13% |
-
 **Resumen de limitaciones físicas:**
 
-La limitación a 1300 Hz es el resultado de la **interacción de tres factores** que NO pueden resolverse sin cambiar el hardware:
+La limitación a 1300 Hz es el resultado de la interacción de tres factores que NO pueden resolverse sin cambiar el hardware:
 
-1. **Tiempo de respuesta del PORTA (slew rate):** 100-200 ns por transición completa de 8 bits
-   - Este es un límite físico de los transistores MOSFET del ATmega2560
-   - No se puede mejorar por software
+Tiempo de respuesta del PORTA (slew rate): 100-200 ns por transición completa de 8 bits
 
-2. **Capacitancia parásita del circuito R2R:** ~300 pF total
-   - Constante RC = 3 μs → fc_parásito = 53 kHz
-   - Combinada con pocos puntos/ciclo, causa suavizado excesivo
+Este es un límite físico de los transistores MOSFET del ATmega2560
 
-3. **Frecuencia de muestreo fija:** 3840 Hz → solo 2.95 puntos/ciclo a 1300 Hz
-   - Por debajo del mínimo teórico (fs ≥ 3 × f_max)
-   - El DAC no tiene tiempo suficiente para reconstruir picos de amplitud
+No se puede mejorar por software
+
+Capacitancia parásita del circuito R2R: ~300 pF total
+
+Constante RC = 3 μs → fc_parásito = 53 kHz
+
+Combinada con pocos puntos/ciclo, causa suavizado excesivo
+
+Frecuencia de muestreo fija: 3840 Hz → solo 2.95 puntos/ciclo a 1300 Hz
+
+Por debajo del mínimo teórico (fs ≥ 3 × f_max)
+
+El DAC no tiene tiempo suficiente para reconstruir picos de amplitud
 
 **Por qué se usaron 8 bits (y no 10 bits):**
 
-La elección de 8 bits NO fue arbitraria, sino **crítica para alcanzar 1300 Hz**:
+La elección de 8 bits NO fue arbitraria, sino crítica para alcanzar 1300 Hz:
 
-✅ **Con 8 bits (implementado):**
-- Escritura atómica: `PORTA = valor;` → 62.5 ns
-- Tiempo de estabilización: ~200 ns
-- Frecuencia máxima DAC: **1300 Hz con buena definición**
+✅ Con 8 bits (implementado):
 
-❌ **Con 10 bits (hipotético):**
-- Escritura NO atómica: 2 puertos (PORTC + PORTA) → ~262 ns
-- Glitches entre escrituras de puertos diferentes
-- Mayor corriente pico (10 pines vs 8)
-- Capacitancia aumentada (~400 pF vs 300 pF)
-- Tiempo de estabilización estimado: ~500 ns (2.5× peor)
-- Frecuencia máxima DAC: **~800-900 Hz con buena definición** (degradación ~40%)
+Escritura atómica: PORTA = valor; → 62.5 ns
 
-**Conclusión técnica:** El tiempo de respuesta del PORTA y la capacitancia parásita son los **factores limitantes dominantes**. Usar 10 bits en lugar de 8 reduciría la frecuencia máxima utilizable del DAC de 1300 Hz a apenas 800-900 Hz debido a tiempos de procesamiento más largos y transitorios más complejos. Por lo tanto, 8 bits es la configuración óptima para este diseño, maximizando tanto la simplicidad de transmisión como el rendimiento del DAC en frecuencias medias-altas.
+Tiempo de estabilización: ~200 ns
+
+Frecuencia máxima DAC: 1300 Hz con buena definición
+
+❌ Con 10 bits (hipotético):
+
+Escritura NO atómica: 2 puertos (PORTC + PORTA) → ~262 ns
+
+Glitches entre escrituras de puertos diferentes
+
+Mayor corriente pico (10 pines vs 8)
+
+Capacitancia aumentada (~400 pF vs 300 pF)
+
+Tiempo de estabilización estimado: ~500 ns (2.5× peor)
+
+Frecuencia máxima DAC: ~800-900 Hz con buena definición (degradación ~40%)
+
+Conclusión técnica: El tiempo de respuesta del PORTA y la capacitancia parásita son los factores limitantes dominantes. Usar 10 bits en lugar de 8 reduciría la frecuencia máxima utilizable del DAC de 1300 Hz a apenas 800-900 Hz debido a tiempos de procesamiento más largos y transitorios más complejos. Por lo tanto, 8 bits es la configuración óptima para este diseño, maximizando tanto la simplicidad de transmisión como el rendimiento del DAC en frecuencias medias-altas.
 
 Conclusión:
 
@@ -3712,7 +4494,7 @@ Acondicionamiento de Señal: Se logró adaptar señales de ±6V al rango del ADC
 
 Procesamiento Digital: La implementación de la FFT mediante la biblioteca FFTW3 y los filtros IIR de orden 8 (Butterworth) permitió un análisis espectral preciso con resolución de 1 Hz y una manipulación de la señal con una latencia mínima de 1.04 ms, lo cual es imperceptible para aplicaciones de audio en tiempo real. Las pruebas con señales senoidales, cuadradas y triangulares (Sección 7.4) validaron la correcta detección de armónicas y el cálculo del THD.
 
-Recreación Analógica: El circuito R2R de 8 bits demostró ser una alternativa sumamente asequible y efectiva para la función de DAC, permitiendo reconstruir las señales procesadas con una fidelidad aceptable hasta aproximadamente 1300 Hz. La degradación de amplitud observada por encima de esta frecuencia (Sección 7.8) no constituye un error, sino una **limitación física inherente al tiempo de respuesta del PORTA del microcontrolador** (slew rate ~100-200 ns) combinado con la capacitancia parásita del circuito (~300 pF) y la frecuencia de muestreo de 3840 Hz, que juntos restringen la reconstrucción de calidad a frecuencias menores a fs/3 cuando se utilizan pocas muestras por ciclo. La elección de 8 bits en lugar de 10 bits resultó crítica: usar 10 bits habría reducido la frecuencia máxima utilizable del DAC a apenas 800-900 Hz (vs 1300 Hz actual) debido a escrituras no atómicas y tiempos de estabilización más largos.
+Recreación Analógica: El circuito R2R de 8 bits demostró ser una alternativa sumamente asequible y efectiva para la función de DAC, permitiendo reconstruir las señales procesadas con una fidelidad aceptable hasta aproximadamente 1300 Hz. La degradación de amplitud observada por encima de esta frecuencia (Sección 7.8) no constituye un error, sino una limitación física inherente al tiempo de respuesta del PORTA del microcontrolador (slew rate ~100-200 ns) combinado con la capacitancia parásita del circuito (~300 pF) y la frecuencia de muestreo de 3840 Hz, que juntos restringen la reconstrucción de calidad a frecuencias menores a fs/3 cuando se utilizan pocas muestras por ciclo. La elección de 8 bits en lugar de 10 bits resultó crítica: usar 10 bits habría reducido la frecuencia máxima utilizable del DAC a apenas 800-900 Hz (vs 1300 Hz actual) debido a escrituras no atómicas y tiempos de estabilización más largos.
 
 Validaciones Experimentales
 
@@ -3724,8 +4506,7 @@ Filtros Digitales: La respuesta en frecuencia de los filtros IIR coincide con la
 
 Aprendizajes Clave
 
-El desarrollo de este sistema permitió integrar conceptos críticos de ingeniería como el Teorema de Nyquist, la transformación bilineal para el diseño de filtros, la optimización de protocolos de comunicación serie para sistemas de tiempo real, y la comprensión profunda de las **limitaciones físicas de circuitos DAC implementados con redes resistivas R2R y puertos GPIO de microcontroladores**. Un hallazgo particularmente significativo fue descubrir cómo el **tiempo de respuesta del PORTA (slew rate)** y la **capacitancia parásita del circuito** interactúan con la frecuencia de muestreo para determinar la frecuencia máxima alcanzable del DAC, y cómo decisiones de diseño aparentemente simples (usar 8 bits vs 10 bits) tienen impactos profundos en el rendimiento del sistema (1300 Hz vs 800-900 Hz). A pesar de las restricciones económicas del hardware, la versatilidad de la plataforma permitió cumplir con todos los objetivos planteados, validando la capacidad del sistema para visualizar y procesar señales de forma similar a instrumentos de laboratorio más sofisticados.
-
+El desarrollo de este sistema permitió integrar conceptos críticos de ingeniería como el Teorema de Nyquist, la transformación bilineal para el diseño de filtros, la optimización de protocolos de comunicación serie para sistemas de tiempo real, y la comprensión profunda de las limitaciones físicas de circuitos DAC implementados con redes resistivas R2R y puertos GPIO de microcontroladores. Un hallazgo particularmente significativo fue descubrir cómo el tiempo de respuesta del PORTA (slew rate) y la capacitancia parásita del circuito interactúan con la frecuencia de muestreo para determinar la frecuencia máxima alcanzable del DAC, y cómo decisiones de diseño aparentemente simples (usar 8 bits vs 10 bits) tienen impactos profundos en el rendimiento del sistema (1300 Hz vs 800-900 Hz). A pesar de las restricciones económicas del hardware, la versatilidad de la plataforma permitió cumplir con todos los objetivos planteados, validando la capacidad del sistema para visualizar y procesar señales de forma similar a instrumentos de laboratorio más sofisticados.
 
 # Bibliografía:
 

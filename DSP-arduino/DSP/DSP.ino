@@ -24,7 +24,6 @@
  */
 
 // Incluir librerías del proyecto
-// #include "usart.h"  // Deshabilitado
 #include "adc.h"       // Control del ADC
 #include "timer1.h"    // Timer1 para interrupciones precisas  
 #include "tablas.h"    // Tablas de formas de onda
@@ -34,7 +33,7 @@
 
 // Instancias de controladores
 ADCController adc;           // Controlador del ADC
-Timer1 timer1(3840.0);       // Timer a 11520 Hz para muestreo
+Timer1 timer1(3840.0);       // Timer a 3840 Hz para muestreo
 
 /**
  * Escribe un valor de 8 bits al DAC R2R usando PORTA completo
@@ -57,13 +56,13 @@ Timer1 timer1(3840.0);       // Timer a 11520 Hz para muestreo
  * - Pin 29 (PA7) = Bit 7 (MSB)
  */
 void write(uint8_t valor){
-  // Escritura directa y atómica de los 8 bits al PORTA
-  // Mucho más eficiente que la versión de Arduino Uno
-  PORTA = valor;
+  // MEGA 2560: Escritura atómica en una sola instrucción (62.5 ns @ 16MHz)
+  // UNO: Requería 2 escrituras (PORTD + PORTB) = ~125 ns + jitter entre bits
+  // Mejora: 2x más rápido, 0% jitter, señal DAC más limpia
+  PORTA = valor;  // Los 8 bits se escriben simultáneamente
 }
 
 // Variables globales para el sistema DSP
-uint8_t counter = 0;        // Contador para indexar tablas de ondas
 uint8_t valor = 0;          // Valor actual a escribir al DAC
 volatile bool beat = false; // Flag de sincronización con timer
 
@@ -71,11 +70,8 @@ volatile bool beat = false; // Flag de sincronización con timer
 // Genera la salida del DAC para crear formas de onda continuas
 ISR(TIMER1_COMPA_vect)
 {
-  // uint8_t valor = senoidal[n++];  // Opcional: usar tabla senoidal
   write(valor);  // Escribir valor actual al DAC
   beat = true;   // Señalizar que ocurrió una interrupción
-
-  // print = true;  // Flag opcional para debug
 }
 
 // Interrupción del ADC: Conversión analógica completa
@@ -108,15 +104,14 @@ ISR(USART0_RX_vect)
  */
 void setup()
 {
-   // Serial.begin(115200, SERIAL_8N1);  // Deshabilitado - usar USART custom
-   
    // Inicializar periféricos
    adc.begin(1);        // Iniciar ADC en canal 1
-   usart.begin(38400);    // Comunicación serie a 38400 baudios (sincronizado con SerialPlotter), probar con 115200
+   usart.begin(38400);  // Comunicación serie a 38400 baudios (sincronizado con SerialPlotter)
 
    // Configurar PORTA completo como salida para DAC (pines 22-29)
-   // Arduino Mega 2560: PORTA = pines 22-29 (PA0-PA7)
-   // Esta configuración es mucho más simple que Arduino Uno
+   // VENTAJA MEGA 2560: Un solo puerto completo vs Uno que necesita 2 puertos parciales
+   // Arduino Mega: PORTA = pines 22-29 (PA0-PA7) - 8 bits contiguos
+   // Arduino Uno: Requería PORTD (6 bits) + PORTB (2 bits) - glitches por escrituras separadas
    DDRA = 0xFF;  // Todos los pines de PORTA como salida (11111111 binario)
 
    // Configurar e iniciar Timer1
@@ -127,16 +122,6 @@ void setup()
    pinMode(13, OUTPUT);
    digitalWrite(13, false);  // LED apagado inicialmente
 }
-
-// Variables para test de comunicación serie
-uint8_t i = 0;              // Contador de bytes enviados (0-249)
-bool enviar = true;         // Flag para controlar envío único
-uint8_t contador = 0;       // Contador de bytes recibidos 
-uint8_t esperado = 0;       // Valor esperado (no usado actualmente)
-
-uint8_t lectura[250];       // Buffer para almacenar datos recibidos
-
-bool encender = true;       // Flag de control (no usado)
 
 /**
  * Bucle principal del programa
@@ -149,55 +134,11 @@ bool encender = true;       // Flag de control (no usado)
  */
 void loop()
 {
-   /* ==============================
-    * CÓDIGO DE TEST DESACTIVADO
-    * (Se mantiene para referencia futura)
-    * ==============================
-   static uint32_t inicio = millis();  // Timestamp de inicio
-
-   // Fase 1: Enviar secuencia de test (0-249)
-   if (i < 250){
-      usart.escribir_espera(i);  // Enviar byte con espera bloqueante
-      // usart.escribir(0xAB);   // Alternativa: envío asíncrono
-      
-      // Recibir respuesta si está disponible
-      if (usart.pendiente_lectura())
-         lectura[contador++] = usart.leer();
-
-      i++;
-   }
-   // Fase 2: Procesar resultados del test
-   else if (i == 250 && enviar) {
-      enviar = false;
-      
-      // Verificar si la comunicación fue exitosa (eco correcto)
-      for (size_t j = 0; j < 250; j++)
-         if (j != lectura[j])
-            break;  // Error en comunicación
-
-      // Enviar tiempo transcurrido (4 bytes en little-endian)
-      uint32_t tiempo = millis() - inicio;
-      usart.escribir_espera(' ');
-      usart.escribir_espera(' ');
-      usart.escribir_espera('T');
-      usart.escribir_espera(tiempo & 255);           // Byte 0 (LSB)
-      usart.escribir_espera((tiempo >> 8) & 255);    // Byte 1
-      usart.escribir_espera((tiempo >> 16) & 255);   // Byte 2
-      usart.escribir_espera((tiempo >> 24) & 255);   // Byte 3 (MSB)
-
-      // Encender LED si se recibió toda la secuencia
-      if (contador == 250)
-         digitalWrite(13, true);
-   }
-   */
-
-   // ==============================
-   // CÓDIGO DSP ACTIVO - Sistema bidireccional ADC ↔ PC ↔ DAC
-   // Funcionamiento:
+   // Sistema DSP bidireccional ADC ↔ PC ↔ DAC
    // 1. Lee señal analógica del ADC a 3840 Hz
-   // 2. Envía muestra por serie a la PC/interfaz C++
-   // 3. Si recibe datos procesados de la PC, los usa para el DAC
-   // 4. Si no, usa directamente el ADC invertido para el DAC
+   // 2. Envía muestra por serie a SerialPlotter para procesamiento
+   // 3. Recibe datos procesados desde SerialPlotter
+   // 4. Escribe al DAC para generar señal de salida
    if (beat){
       beat = false;
       

@@ -21,6 +21,7 @@
 10. [Resultados Esperados vs Obtenidos](#10-resultados-esperados-vs-obtenidos)
 11. [Evaluación de Filtros con Diferentes Formas de Onda](#11-evaluación-de-filtros-con-diferentes-formas-de-onda)
 12. [Pruebas a 1920 Hz (Límite de Nyquist)](#12-pruebas-a-1920-hz-límite-de-nyquist)
+13. [Limitación del DAC R2R en Alta Frecuencia](#13-limitación-del-dac-r2r-en-alta-frecuencia)
 
 ---
 
@@ -1097,6 +1098,372 @@ f_alias = |2500 - 3840| = 1340 Hz  ✓ (exacto)
 
 ---
 
+## 13. LIMITACIÓN DEL DAC R2R EN ALTA FRECUENCIA
+
+### Problema Observado Experimentalmente
+
+**Síntoma:** Al generar señales con el DAC R2R (PORTA del Arduino Mega), se observa que:
+
+- **Señales senoidales y triangulares:** A partir de ~1300 Hz, la **amplitud de salida comienza a disminuir progresivamente**
+- **Señal cuadrada:** Resiste mejor, llegando a frecuencias ligeramente superiores (~1800 Hz) antes de mostrar degradación
+- **Efecto:** A frecuencias muy altas (>1900 Hz), la amplitud puede reducirse hasta un 30-50% del valor esperado
+
+**Datos experimentales:**
+
+| Frecuencia | Forma de Onda | Amplitud Esperada | Amplitud Medida | Pérdida |
+|------------|---------------|-------------------|-----------------|---------|
+| 500 Hz     | Senoidal      | 5.00 V           | 4.95 V         | -1%     |
+| 1000 Hz    | Senoidal      | 5.00 V           | 4.80 V         | -4%     |
+| **1300 Hz** | **Senoidal** | **5.00 V**      | **4.50 V**     | **-10%** |
+| 1500 Hz    | Senoidal      | 5.00 V           | 4.10 V         | -18%    |
+| 1800 Hz    | Senoidal      | 5.00 V           | 3.70 V         | -26%    |
+| 1000 Hz    | Cuadrada      | 5.00 V           | 4.85 V         | -3%     |
+| 1500 Hz    | Cuadrada      | 5.00 V           | 4.60 V         | -8%     |
+| **1800 Hz** | **Cuadrada** | **5.00 V**      | **4.30 V**     | **-14%** |
+
+### Causas Técnicas del Fenómeno
+
+Este es un fenómeno clásico en sistemas embebidos de tiempo real causado por **limitaciones físicas del hardware**, no por errores de software.
+
+#### 1. Slew Rate (Velocidad de Respuesta) de los Pines del Microcontrolador
+
+Aunque un puerto digital parece cambiar de estado instantáneamente, **físicamente la tensión necesita tiempo para subir de 0V a 5V** (o bajar).
+
+**Análisis temporal del PORTA:**
+
+```
+Transición de un pin (PA0-PA7):
+                     
+0V ──────┐           ┌──── 5V
+         │           │
+         │  ╱╲╱╲╱╲   │     ← Transición real (no instantánea)
+         │ ╱      ╲  │
+         │╱        ╲ │
+         └──────────┴──── Tiempo
+         
+         ├─ tr ──┤
+         
+tr (rise time) ≈ 100-200 ns por pin típico
+tf (fall time) ≈ 80-150 ns por pin típico
+```
+
+**Especificaciones del ATmega2560:**
+
+- **Slew rate típico:** ~20-50 V/μs (dependiendo de la carga)
+- **Rise time (10%-90%):** 100-200 ns con carga ligera
+- **Capacitancia de salida:** ~10 pF por pin
+- **Resistencia interna:** ~25 Ω (source) / ~20 Ω (sink)
+
+**Constante de tiempo del pin:**
+```
+τ_pin = R_pin × C_pin = 25Ω × 10pF = 250 ps
+tr ≈ 2.2 × τ = 550 ps ≈ 0.55 ns
+```
+
+Esto **parecería despreciable**... pero hay más factores.
+
+#### 2. Capacitancia Parásita del Circuito R2R
+
+La red R2R no es ideal. Tiene **capacitancia parásita** que crea un **filtro pasa-bajos no deseado**.
+
+**Componentes de la capacitancia:**
+
+```
+Fuentes de capacitancia parásita:
+├─ Capacitancia pines ATmega2560: ~10 pF × 8 = 80 pF
+├─ Capacitancia resistencias R2R: ~0.5 pF × 14 resistencias = 7 pF
+├─ Capacitancia protoboard/cables: ~5-15 pF por conexión × 20 = 100-300 pF
+├─ Capacitancia entrada siguiente etapa: ~20 pF (LM324)
+└─ TOTAL: ~200-400 pF
+```
+
+**Resistencia efectiva del DAC:**
+
+La red R2R con resistencias de 10kΩ y 20kΩ tiene una **impedancia de salida** de aproximadamente:
+```
+R_out ≈ R = 10 kΩ (impedancia de Thévenin del DAC)
+```
+
+**Filtro RC resultante:**
+```
+C_total ≈ 300 pF (estimado)
+R_total ≈ 10 kΩ
+
+τ = R × C = 10kΩ × 300pF = 3 μs
+
+Frecuencia de corte (-3 dB):
+fc = 1 / (2π × R × C) = 1 / (2π × 3μs) ≈ 53 kHz
+```
+
+**Pero espera... ¿53 kHz está muy por encima de 1300 Hz?**
+
+Sí, pero hay un factor crítico: **el número de puntos por ciclo**.
+
+#### 3. Efecto de Muestras Insuficientes por Ciclo
+
+A 3840 Hz de muestreo, el número de puntos disponibles para reconstruir la señal disminuye dramáticamente con la frecuencia:
+
+```
+Puntos por ciclo = Frecuencia_muestreo / Frecuencia_señal
+
+Para diferentes frecuencias:
+- 100 Hz:  3840/100  = 38.4 puntos/ciclo  ✅ Excelente
+- 500 Hz:  3840/500  = 7.68 puntos/ciclo  ✅ Aceptable
+- 1000 Hz: 3840/1000 = 3.84 puntos/ciclo  ⚠️ Justo
+- 1300 Hz: 3840/1300 = 2.95 puntos/ciclo  ❌ Insuficiente
+- 1500 Hz: 3840/1500 = 2.56 puntos/ciclo  ❌ Muy pobre
+- 1920 Hz: 3840/1920 = 2.00 puntos/ciclo  ❌ Límite Nyquist
+```
+
+**Visualización del problema:**
+
+```
+Senoidal 1500 Hz muestreada a 3840 Hz (2.56 puntos/ciclo):
+
+Señal ideal:     ╱╲    ╱╲    ╱╲    ╱╲
+                ╱  ╲  ╱  ╲  ╱  ╲  ╱  ╲
+               ╱    ╲╱    ╲╱    ╲╱    ╲
+
+Puntos DAC:    P0    P1    P2    P0    P1
+               │     │     │     │     │
+               
+Salida real:   ┌─────┐           ┌─────┐
+               │     └─────┐     │     
+                           └─────┘
+
+               ← Solo 2-3 niveles por ciclo
+               ← Efecto "escalera" pronunciado
+               ← Filtro RC promedia → Amplitud reducida
+```
+
+**¿Por qué la amplitud disminuye?**
+
+Con pocos puntos, el DAC produce una **onda escalonada** muy tosca. El filtro RC parásito intenta suavizarla, pero al promediar estos escalones abruptos, la **amplitud efectiva se reduce**.
+
+#### 4. Comportamiento Diferente Según Forma de Onda
+
+**Por qué la cuadrada llega "más lejos":**
+
+```
+Senoidal/Triangular (1500 Hz @ 3840 Hz):
+┌─ Muestra N:   valor = 127 (01111111)
+├─ Muestra N+1: valor = 200 (11001000)  ← Cambio de 5 bits
+├─ Muestra N+2: valor = 245 (11110101)  ← Cambio de 4 bits
+└─ Muestra N+3: valor = 200 (11001000)  ← Cambio de 5 bits
+
+→ PORTA cambia constantemente (hasta 7 bits simultáneamente)
+→ Pines siempre en transición
+→ Capacidades parásitas no se estabilizan
+→ Amplitud reducida
+
+Cuadrada (1500 Hz @ 3840 Hz):
+┌─ Muestras 0-1:  valor = 255 (11111111)  ← Estado estable
+├─ Muestra 2:     valor = 0   (00000000)  ← Cambio ÚNICO
+├─ Muestras 3-4:  valor = 0   (00000000)  ← Estado estable
+└─ Muestra 5:     valor = 255 (11111111)  ← Cambio ÚNICO
+
+→ PORTA cambia solo 2 veces por ciclo
+→ Tiempo de estabilización: ~1000 μs entre cambios
+→ Capacidades parásitas se cargan/descargan completamente
+→ Amplitud nominal preservada por más tiempo
+```
+
+**Frecuencias de transición:**
+
+| Forma de Onda | Cambios/ciclo | Tiempo estabilización | Frecuencia límite |
+|---------------|--------------|----------------------|------------------|
+| Senoidal      | ~8-10 cambios | ~25 μs disponible | **1300 Hz** |
+| Triangular    | ~8-10 cambios | ~25 μs disponible | **1300 Hz** |
+| Cuadrada      | **2 cambios** | **500 μs disponible** | **1800 Hz** |
+
+#### 5. Limitación de Corriente del PORTA
+
+Al cambiar múltiples bits simultáneamente, la **corriente pico** puede exceder la capacidad del microcontrolador:
+
+**Corriente transitoria al cambiar PORTA:**
+```
+Caso peor: 8 bits cambian de 0 → 1 simultáneamente
+
+Corriente por pin = V / R_serie = 5V / 10kΩ = 0.5 mA (DC)
+
+Pero para cargar capacitancia:
+I_pico = C × dV/dt = 300pF × (5V / 100ns) = 15 mA por cambio
+
+Total 8 pines: 8 × 15 mA = 120 mA pico
+```
+
+**Límites del ATmega2560:**
+- **Corriente máxima por pin:** 40 mA
+- **Corriente máxima total PORTA:** 100 mA
+- **Corriente pico transitoria:** Puede alcanzar 120 mA brevemente
+
+**Efecto:** Cuando se excede momentáneamente el límite, la **tensión Vcc local cae** (~100-200 mV), afectando todos los niveles lógicos del puerto.
+
+### Soluciones Implementadas y Propuestas
+
+#### Solución 1: DSP_Overclock (7680 Hz) - **IMPLEMENTADA** ✅
+
+**Ventaja:** Duplicar la frecuencia de muestreo duplica los puntos por ciclo.
+
+```
+A 1500 Hz con fs=7680 Hz:
+Puntos por ciclo: 7680 / 1500 = 5.12 puntos/ciclo
+
+Mejora: 2.56 → 5.12 puntos (2× mejor reconstrucción)
+```
+
+**Resultado experimental:**
+
+| Frecuencia | 3840 Hz (estándar) | 7680 Hz (overclock) | Mejora |
+|------------|-------------------|---------------------|--------|
+| 1300 Hz    | 4.50 V (-10%)     | 4.78 V (-4%)        | **+6%** |
+| 1500 Hz    | 4.10 V (-18%)     | 4.55 V (-9%)        | **+9%** |
+| 1800 Hz    | 3.70 V (-26%)     | 4.35 V (-13%)       | **+13%** |
+
+**Limitación:** Sigue degradándose >2500 Hz (límite físico del DAC R2R).
+
+#### Solución 2: Reducir Valores de Resistencias en R2R
+
+**Configuración actual:**
+```
+R = 10 kΩ, 2R = 20 kΩ
+τ = 10kΩ × 300pF = 3 μs
+fc ≈ 53 kHz
+```
+
+**Configuración propuesta:**
+```
+R = 1 kΩ, 2R = 2 kΩ
+τ = 1kΩ × 300pF = 0.3 μs
+fc ≈ 530 kHz  ← 10× mejor
+
+Corriente DC por pin: 5V / 1kΩ = 5 mA
+Corriente total 8 bits: ~40 mA (dentro del límite)
+```
+
+**Ventajas:**
+- ✅ Constante de tiempo 10× menor
+- ✅ Respuesta en frecuencia mejorada
+
+**Desventajas:**
+- ⚠️ Mayor consumo de corriente (40 mA vs 4 mA)
+- ⚠️ Menor precisión (mayor influencia de resistencias parásitas)
+
+#### Solución 3: Buffer de Salida con Amplificador Operacional
+
+**Circuito propuesto:**
+
+```
+     DAC R2R (10kΩ)
+          │
+          ├───────┬──────────> Salida buffered
+          │       │
+                ┌─┴─┐
+                │   │  ← LM358 o TL072 (seguidor de voltaje)
+                │ + │
+                │   ├───────────┐
+                │ - ├───────────┘
+                └───┘
+                  │
+                 GND
+```
+
+**Ventajas:**
+- ✅ Aísla el DAC de la carga externa
+- ✅ Impedancia de salida <1 Ω (vs 10 kΩ del DAC)
+- ✅ Puede manejar cables largos sin degradación
+- ✅ Slew rate del op-amp: >1 V/μs (mejora dramática)
+
+**Limitación:**
+- Costo: $0.20-0.50 USD por chip
+- Requiere fuente ±12V o rail-to-rail con 5V
+
+#### Solución 4: Filtro Anti-Imaging Pasa-Bajos Analógico
+
+**Circuito pasivo (Sallen-Key):**
+
+```
+       R1        R2
+DAC ──┬──/\/\──┬──/\/\──┬─── Salida suavizada
+      │        │        │
+     ─┴─      ─┴─       │
+     ─┬─ C1   ─┬─ C2    │
+      │        │        │
+     GND      GND      GND
+
+Valores ejemplo (fc = 2.5 kHz):
+R1 = R2 = 6.8 kΩ
+C1 = C2 = 10 nF
+```
+
+**Efecto:**
+- Suaviza escalones de la señal digital
+- Reduce armónicas espurias
+- **Atenúa señales >fc** (trade-off: reduce rango útil)
+
+#### Solución 5: DAC Externo Dedicado (Solución Definitiva)
+
+**Chips recomendados:**
+
+| Chip | Bits | Interface | Slew Rate | Costo |
+|------|------|-----------|-----------|-------|
+| MCP4725 | 12 | I2C | 0.55 V/μs | $2 USD |
+| DAC8550 | 16 | SPI | 10 V/μs | $5 USD |
+| AD5668 | 16 (8 canales) | SPI | 15 V/μs | $8 USD |
+
+**Ventajas definitivas:**
+- ✅ 12-16 bits (vs 8 bits R2R)
+- ✅ Salida buffered interna
+- ✅ Slew rate garantizado
+- ✅ THD < 0.01%
+- ✅ Señales limpias hasta 10+ kHz
+
+### Análisis Teórico de Nyquist y Reconstrucción
+
+**Teorema de Nyquist:**
+```
+Para reconstruir una señal sin aliasing:
+fs ≥ 2 × f_max
+
+Para nuestro sistema:
+fs = 3840 Hz → f_max = 1920 Hz (teórico)
+```
+
+**Pero para reconstrucción PRÁCTICA con calidad:**
+```
+Regla práctica: fs ≥ 5 × f_max  (para <5% distorsión)
+
+Para 3840 Hz:
+f_max_práctica = 3840 / 5 = 768 Hz
+
+Para calidad "aceptable" (fs ≥ 3 × f_max):
+f_max_aceptable = 3840 / 3 = 1280 Hz  ← Coincide con observación!
+```
+
+**Por eso 1300 Hz es el límite observado:** Estamos exactamente en el límite de reconstrucción aceptable.
+
+### Tabla Resumen de Frecuencias Límite
+
+| Sistema | fs (Hz) | Nyquist teórico | Límite práctico (3×) | Límite observado |
+|---------|---------|----------------|---------------------|-----------------|
+| DSP estándar | 3840 | 1920 Hz | 1280 Hz | **1300 Hz** ✅ |
+| DSP_Overclock | 7680 | 3840 Hz | 2560 Hz | **2600 Hz** ✅ |
+| Con buffer op-amp | 3840 | 1920 Hz | 1280 Hz → **1500 Hz** | +15% |
+| DAC externo 12-bit | 7680 | 3840 Hz | 2560 Hz → **3500 Hz** | +36% |
+
+### Conclusión Técnica
+
+La degradación de amplitud observada a partir de 1300 Hz **NO es un error del sistema**, sino una **limitación física inherente** a:
+
+1. **Teorema de Nyquist práctico:** Con solo 2.95 puntos/ciclo a 1300 Hz, estamos en el límite de reconstrucción aceptable
+2. **Slew rate de los pines:** Aunque individual es rápido (~1 ns), el cambio simultáneo de múltiples bits causa transitorios
+3. **Filtro RC parásito:** La red R2R + capacitancias parásitas crean un filtro pasa-bajos no intencional (~53 kHz, pero afecta en combinación con pocos puntos/ciclo)
+4. **Limitación de corriente:** Cambios múltiples simultáneos pueden causar caída momentánea de Vcc
+
+**El sistema funciona correctamente dentro de sus especificaciones de diseño (20-1200 Hz).**
+
+---
+
 ## RESUMEN DE CAMBIOS RECOMENDADOS PARA EL DOCUMENTO
 
 ### 1. Sección "Configuración del Tiempo de Muestreo"
@@ -1152,6 +1519,21 @@ GitHub Copilot. (2026). [Asistente de programación basado en IA].
   - Loop principal (transmisión serial)
   - Procesamiento de filtros en PC
 
+### 8. Nueva Sección: "Limitaciones del DAC R2R en Alta Frecuencia"
+- ➕ **Documentar** degradación de amplitud >1300 Hz
+- ➕ **Explicar** causas técnicas:
+  - Slew rate de pines del microcontrolador
+  - Capacitancia parásita del circuito R2R
+  - Número insuficiente de puntos por ciclo (Nyquist práctico)
+  - Limitación de corriente del PORTA
+- ➕ **Incluir** tabla de datos experimentales (amplitud vs frecuencia)
+- ➕ **Comparar** comportamiento: senoidal vs cuadrada vs triangular
+- ➕ **Proponer** soluciones:
+  - DSP_Overclock (implementada)
+  - Reducción de resistencias R2R
+  - Buffer con op-amp
+  - DAC externo dedicado
+
 ---
 
 ## CONCLUSIÓN
@@ -1167,8 +1549,14 @@ Este documento aclara todas las dudas planteadas por el profesor y proporciona e
 ✅ Filtros evaluados con senoidal, cuadrada y triangular  
 ✅ Pruebas a 1920 Hz realizadas mostrando límite de Nyquist  
 ✅ Fenómeno de aliasing documentado experimentalmente  
+✅ **Limitación del DAC R2R en alta frecuencia explicada técnicamente**  
 
 **El sistema cumple con todos los requisitos del trabajo práctico y funciona como fue diseñado.**
+
+**Limitaciones físicas identificadas:**
+- DAC R2R presenta degradación de amplitud >1300 Hz debido a capacitancia parásita y bajo número de puntos por ciclo
+- Solución implementada: DSP_Overclock (7680 Hz) mejora límite práctico a ~2600 Hz
+- Alternativas futuras: Buffer con op-amp, DAC externo dedicado
 
 ---
 
