@@ -10,8 +10,10 @@ class USART {
     }
 
 public:
-    uint8_t buffer_escritura[256], buffer_lectura[64];  // OPTIMIZADO: Buffer x2 para mejor rendimiento
-    // Desactiva optimizaciones
+    // Aumentar tamaño de buffers para reducir overhead de ISR y prevenir pérdida de datos
+    // Arduino Mega tiene más RAM (8KB vs 2KB del Uno), podemos usar buffers más grandes
+    uint8_t buffer_escritura[256], buffer_lectura[64];  // Era 128/32, ahora 256/64 (2x más)
+    // volatile previene optimizaciones del compilador que rompan lógica de buffer circular
     volatile uint8_t inicio_e = 0, fin_e = 0, inicio_l = 0, fin_l = 0;
 
     const static uint8_t interrupcion_rx = 1 << RXCIE0;
