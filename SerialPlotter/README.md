@@ -1,118 +1,123 @@
-# SerialPlotter — Interfaz PC para DSP en Tiempo Real
+# SerialPlotter
 
-Aplicación profesional de visualización y análisis espectral desarrollada en C++17. Comunica bidireccionalamente con Arduino Mega 2560 mediante UART para procesar señales en tiempo real con FFT y filtros digitales IIR.
+Aplicación de escritorio para Windows que funciona como interfaz de adquisición, visualización y procesamiento DSP en tiempo real para el sistema basado en Arduino Mega 2560.
 
-## Características
+SerialPlotter recibe muestras por UART, las transforma a voltaje, muestra la señal en tiempo real, ejecuta análisis FFT, aplica filtros IIR y puede reenviar la señal procesada al microcontrolador para su salida por DAC R2R.
 
-- **Visualización dual**: gráficos temporales + análisis espectral (FFT) en paralelo
-- **FFT en tiempo real**: FFTW3 optimizado, detección automática de armónicas y THD
-- **Filtros Butterworth IIR orden 8**: pasa-bajos y pasa-altos configurables
-- **Interfaz gráfica moderna**: ImGui + ImPlot, responsiva y configurable
-- **Comunicación bidireccional**: Arduino → PC (señales), PC → Arduino (resultados procesados)
-- **Buffer circular 256 bytes**: manejo eficiente de datos sin pérdida
+## Qué hace
 
-## Especificaciones
+- Lee muestras de 8 bits enviadas por el Arduino a 38400 baud.
+- Convierte esas muestras a voltaje según la calibración configurada.
+- Muestra tres vistas simultáneas: entrada, salida filtrada y espectro FFT.
+- Permite congelar la visualización sin detener la adquisición.
+- Aplica filtros Butterworth IIR de orden 8 en tiempo real.
+- Detecta frecuencia dominante, armónicas y THD.
 
-| Característica | Detalle |
+## Tecnologías utilizadas
+
+| Componente | Tecnología |
 |---|---|
-| **Lenguaje** | C++17 |
-| **Build** | CMake 3.20+, Ninja |
-| **GUI** | ImGui + ImPlot + GLFW + OpenGL (GLAD) |
-| **Procesamiento** | FFTW3 (FFT), IIR1 (Filtros) |
-| **Comunicación** | UART 38400 baud, bidireccional |
-| **Plataforma** | Windows (MSVC 2019+) |
-| **Latencia** | ~0.6–0.8 ms extremo a extremo |
+| Lenguaje | C++20 |
+| Build | CMake 3.20+ |
+| Generador recomendado | Ninja |
+| GUI | Dear ImGui + ImPlot |
+| Renderizado | GLFW + OpenGL + GLAD |
+| FFT | FFTW3 |
+| Filtros | IIR1 |
+| Comunicación serial | Win32 API |
+| Plataforma objetivo | Windows |
 
-## Estructura del Código Fuente
+## Arquitectura real de la aplicación
+
+El código actual implementa esta estructura:
+
+- Hilo principal: interfaz gráfica y renderizado.
+- Hilo serial: lectura continua del puerto COM, transformación ADC→voltaje y aplicación de filtro.
+- Hilo de análisis: cálculo periódico de FFT sobre las últimas muestras.
+
+Los datos se almacenan en buffers circulares separados para:
+
+- eje temporal,
+- señal de entrada,
+- señal filtrada.
+
+Cuando se activa el modo congelado, se toma un snapshot thread-safe de esos buffers para permitir inspección y zoom sin frenar la adquisición.
+
+## Funcionalidad validada contra código
+
+Esta documentación fue ajustada a la implementación real en `src/`:
+
+- Estándar de compilación: C++20.
+- Dos hilos de trabajo: serial y análisis.
+- Filtros disponibles: ninguno, pasa-bajos Butterworth orden 8, pasa-altos Butterworth orden 8.
+- Detección de hasta 10 armónicas desde la interfaz.
+- Cálculo de THD cuando hay suficientes armónicas detectadas.
+- Buffers de lectura y escritura de 512 bytes dentro de la aplicación PC.
+- Frecuencia y baudrate configurables desde la interfaz, con valores por defecto de 3840 Hz y 38400 baud.
+- Comunicación serial implementada exclusivamente con la API de Windows.
+
+## Estructura del código fuente
 
 ```
 SerialPlotter/
 ├── src/
-│   ├── main.cpp/h              # Punto de entrada, loop principal
-│   ├── MainWindow.cpp/h        # Ventana principal, composición UI
-│   ├── Serial.cpp/h            # Control de puerto COM
-│   ├── FFT.cpp/h               # Análisis espectral con FFTW3
-│   ├── Settings.cpp/h          # Persistencia de configuración
-│   ├── Console.cpp/h           # Salida de debugging (Windows)
-│   ├── Buffers.h               # Estructuras circulares para muestras
-│   └── Widgets.h               # Componentes UI reutilizables
+│   ├── main.cpp / main.h        # Punto de entrada y loop principal
+│   ├── MainWindow.cpp / .h      # UI, adquisición, filtros, freeze, FFT
+│   ├── Serial.cpp / .h          # Puerto COM mediante Win32 API
+│   ├── FFT.cpp / .h             # Cálculo de FFT y detección de armónicas
+│   ├── Settings.cpp / .h        # Configuración del sistema
+│   ├── Console.cpp / .h         # Consola auxiliar en Windows
+│   ├── Buffers.h                # Buffers circulares
+│   └── Widgets.h                # Widgets reutilizables de UI
 │
-├── extern/
-│   ├── fftw3/                  # Transformada rápida de Fourier
-│   ├── imgui/                  # Interfaz gráfica inmediata
-│   ├── implot/                 # Gráficos para ImGui
-│   ├── glfw/                   # Framework OpenGL
-│   └── iir1/                   # Filtros digitales IIR
-│
-├── include/
-│   ├── fftw3.h
-│   ├── glad/glad.h
-│   └── KHR/khrplatform.h
-│
-└── CMakeLists.txt
+├── include/                     # Headers públicos de dependencias
+├── extern/                      # Dependencias externas
+├── glad.c                       # Loader OpenGL
+└── CMakeLists.txt               # Build principal
 ```
 
-## Compilar
+## Flujo de datos
 
-```bash
-cd SerialPlotter
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-./build/SerialPlotter.exe
+```text
+Arduino -> UART -> SerialWorker -> TransformSample()
+        -> buffer de entrada -> filtro IIR opcional -> buffer de salida
+        -> FFT worker -> análisis espectral
+        -> UI con ImPlot
+        -> InverseTransformSample() -> UART -> Arduino
 ```
-
-**Requisitos previos**: instalar dependencias según `DEPENDENCIES.md` en la raíz del proyecto.
-
-## Uso
-
-1. Conectar Arduino Mega 2560 por USB
-2. Ejecutar `SerialPlotter.exe`
-3. Seleccionar puerto COM
-4. Configurar filtros y parámetros FFT desde la interfaz
-5. Comenzar adquisición de datos
-
----
-
-*Componente PC del sistema DSP integrado Arduino + PC. Ver README.md en la raíz para contexto completo.*
-├── .gitignore         # Archivos a ignorar en Git
-├── .gitmodules        # Submódulos de Git (dependencias)
-├── glad.c             # Implementación de glad (OpenGL loader)
-└── imgui.ini          # Configuración de ImGui (layouts, etc.)
-```
-
-### **🏗️ Lógica de Organización**
-
-#### **Separación por Responsabilidad:**
-- **`src/`**: "Lo que escribimos nosotros"
-- **`extern/`**: "Lo que otros escribieron" 
-- **`include/`**: "Lo que queremos incluir fácilmente"
-- **`build*/`**: "Lo que genera el compilador"
-
-#### **Convenciones Estándar C++:**
-1. **Headers (.h)** y **Source (.cpp)** juntos en `src/`
-2. **Bibliotecas externas** en `extern/` o `third_party/`
-3. **Builds separados** por configuración (Debug/Release)
-4. **CMake out-of-source builds** (nunca compilar en la carpeta fuente)
-
-#### **¿Cómo decidir dónde va cada archivo?**
-- **¿Lo escribí yo?** → `src/`
-- **¿Es una biblioteca externa?** → `extern/`  
-- **¿Es un header que debo incluir?** → `include/`
-- **¿Lo generó el compilador?** → `build*/` o `out/`
-- **¿Configura el proyecto?** → Root directory
-
-## Librerías utilizadas
-- [GLFW](https://github.com/glfw/glfw): A multi-platform library for OpenGL, OpenGL ES, Vulkan, window and input.
-- [glad](https://github.com/Dav1dde/glad): Multi-Language Vulkan/GL/GLES/EGL/GLX/WGL Loader-Generator based on the official specs.
-- [Dear ImGui](https://github.com/ocornut/imgui): Dear ImGui: Bloat-free Graphical User interface for C++ with minimal dependencies.
-- [ImPlot](https://github.com/epezent/implot): Immediate Mode Plotting.
-- [FFTW](https://fftw.org/): C subroutine library for computing the discrete Fourier transform (DFT) in one or more dimensions, of arbitrary input size, and of both real and complex data.
-- [iir1](https://github.com/berndporr/iir1): DSP IIR realtime filter library written in C++.
 
 ## Compilación
 
-    cmake -DCMAKE_BUILD_TYPE=Release -S ruta/al/proyecto -B build
-    cmake --build build
+Desde la raíz de esta carpeta:
 
-## Problemas conocidos
-- Cuando se arrastra o se cambia el estado de la ventana se produce un pequeño desfase.
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+Ejecutable esperado:
+
+```bash
+build/SerialPlotter.exe
+```
+
+## Uso básico
+
+1. Ejecutar la aplicación.
+2. Seleccionar el puerto COM del Arduino.
+3. Configurar baudrate y frecuencia de muestreo.
+4. Conectar.
+5. Ajustar calibración, filtro y visualización según necesidad.
+
+## Limitaciones y alcance
+
+- La aplicación está orientada a Windows.
+- La calibración ADC→voltaje depende del hardware real conectado.
+- La resolución que recibe desde el Arduino es de 8 bits.
+- El análisis de armónicas está limitado por la frecuencia de Nyquist configurada.
+
+## Estado de la documentación
+
+Antes había tres archivos Markdown con contenido duplicado y parcialmente inconsistente. Se unificó todo en este README para dejar una única fuente de verdad alineada con la implementación actual.
+
+Para contexto general del sistema completo Arduino + PC, ver el README de la raíz del repositorio.

@@ -6,6 +6,23 @@
 
 Sistema completo de procesamiento digital de señales en tiempo real. Combina un circuito de acondicionamiento analógico, firmware embebido en C++ para Arduino Mega 2560, y una aplicación de escritorio desarrollada en C++17 con interfaz gráfica, análisis espectral (FFT) y filtros digitales IIR.
 
+## Montaje experimental
+
+### 1) Interfaz de gráficos de entrada y salida
+![Interface de graficos de entrada y salida](img-wwpp/Captura%20de%20pantalla%202026-05-06%20172443.png)
+
+Sección de la interfaz de la aplicación hecha en C++, muestra cómo se detecta la señal y las opciones de configuración que tiene para establecer la comunicación con el sistema embebido.
+
+### 2) Tabla y gráfico de armónicos
+![Tabla y gráfico con información de armónicos](img-wwpp/Captura%20de%20pantalla%202026-05-06%20173254.png)
+
+Sección de la interfaz de la aplicación encargada de mostrar en una tabla y un gráfico la información de armónicos detectados, con opciones de configuracion permitiendo  elegir si cambiar la escala del gráfico y resaltar o no la frecuencia dominante/fundamental.
+
+### 3) Montaje experimental en laboratorio
+![Montaje experimental del sistema de adquisición y prueba](img-wwpp/WhatsApp%20Image%202026-05-06%20at%2018.48.13%20(1).jpeg)
+
+Generador de funciones y osciloscopio utilizados durante la validación del sistema. Esta captura muestra una de las pruebas experimentales realizadas sobre la señal de entrada y su comportamiento medido en laboratorio con la frecuencia máxima teórica de muestreo a 1920 Hz.
+
 ---
 
 ## ¿Qué hace este proyecto?
