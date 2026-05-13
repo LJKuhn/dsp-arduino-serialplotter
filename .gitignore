@@ -6,9 +6,6 @@ build-release/
 *.ilk
 *.pdb
 
-# ZIP files
-*.zip
-
 # IDE files
 .vs/
 .vscode/
@@ -35,12 +32,27 @@ extern/
 *.tmp
 *.bak
 *~
+~$*
+*.swp
+*.swo
 
-# PowerShell scripts de debug
+# Microsoft Office
+*.docx
+*.xlsx
+*.pptx
+
+# OS files
+.DS_Store
+Thumbs.db
+*.lnk
+
+# Debug scripts
 run-debug.ps1
 
-# PDF files (opcional, puedes incluirlos si quieres)
-*.pdf
+# Archive files
+*.zip
+*.rar
+*.7z
 
 # Log files
 *.log

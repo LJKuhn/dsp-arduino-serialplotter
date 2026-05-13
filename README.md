@@ -85,17 +85,23 @@ Señal analógica (±6V)
 ## Estructura del repositorio
 
 ```
-├── DSP-arduino/
-│   ├── DSP/                    # Firmware principal (Arduino Mega 2560)
-│   ├── DSP_Overclock/          # Variante experimental con mayor velocidad
-│   └── Arduino_Uno_Auto_Waveforms/  # Generador automático de señales de prueba
+├── DSP/                        # Firmware principal (Arduino Mega 2560)
+│   ├── adc.cpp / adc.h         # Control del ADC en modo Free Running
+│   ├── timer1.h                # Timer1 a 3840 Hz para muestreo preciso
+│   ├── usart.h                 # UART asincrónico con buffer circular
+│   ├── DSP.ino                 # Sketch principal
+│   └── tablas.h, prescaler.h   # Tablas de configuración
 │
 ├── SerialPlotter/
 │   ├── src/                    # Código fuente C++ de la aplicación PC
 │   ├── extern/                 # Dependencias (FFTW3, GLFW, ImGui, IIR1)
-│   └── CMakeLists.txt
+│   ├── CMakeLists.txt
+│   └── README.md               # Documentación detallada de la interfaz
 │
-└── DSP_Completo_UNIFICADO.md   # Informe técnico completo del proyecto
+├── img-wwpp/                   # Imágenes del proyecto (circuito físico)
+├── DSP_Completo_UNIFICADO.md   # Informe técnico completo
+├── DEPENDENCIES.md             # Instrucciones de dependencias
+└── README.md                   # Este archivo
 ```
 
 ---
@@ -103,7 +109,7 @@ Señal analógica (±6V)
 ## Compilar y ejecutar
 
 ### Firmware (Arduino Mega 2560)
-Abrir `DSP-arduino/DSP/DSP.ino` con Arduino IDE y subir al microcontrolador.
+Abrir `DSP/DSP.ino` con Arduino IDE y subir al microcontrolador.
 
 ### Aplicación PC (Windows)
 ```bash

@@ -1,93 +1,79 @@
-# SerialPlotter
+# SerialPlotter — Interfaz PC para DSP en Tiempo Real
 
-Este es un programa simple de DSP que intercambia información de señales con un microcontrolador mediante el puerto serie de la computadora.
+Aplicación profesional de visualización y análisis espectral desarrollada en C++17. Comunica bidireccionalamente con Arduino Mega 2560 mediante UART para procesar señales en tiempo real con FFT y filtros digitales IIR.
 
-## 🎯 **Características Principales**
+## Características
 
-- **🔄 Procesamiento bidireccional**: ADC → PC → DAC en tiempo real
-- **📊 Análisis espectral**: FFT en tiempo real con FFTW3
-- **🔧 Filtros digitales**: Butterworth IIR de 8º orden (pasa-bajos, pasa-altos)
-- **📈 Visualización**: Gráficas de entrada y salida simultáneas
-- **❄️ Modo Congelar**: Pausa la visualización sin detener la adquisición de datos
-- **⚙️ Configuración**: Frecuencias y parámetros ajustables por interfaz
-- **🎛️ Generador de pruebas**: 6 tipos de señales automáticas para testing
-- **🖥️ Interfaz gráfica**: Construida con ImGui para una experiencia de usuario intuitiva
+- **Visualización dual**: gráficos temporales + análisis espectral (FFT) en paralelo
+- **FFT en tiempo real**: FFTW3 optimizado, detección automática de armónicas y THD
+- **Filtros Butterworth IIR orden 8**: pasa-bajos y pasa-altos configurables
+- **Interfaz gráfica moderna**: ImGui + ImPlot, responsiva y configurable
+- **Comunicación bidireccional**: Arduino → PC (señales), PC → Arduino (resultados procesados)
+- **Buffer circular 256 bytes**: manejo eficiente de datos sin pérdida
 
-## 📁 **Estructura del Proyecto C++**
+## Especificaciones
 
-La organización del proyecto sigue estándares modernos de C++ y CMake. Cada carpeta tiene un propósito específico:
+| Característica | Detalle |
+|---|---|
+| **Lenguaje** | C++17 |
+| **Build** | CMake 3.20+, Ninja |
+| **GUI** | ImGui + ImPlot + GLFW + OpenGL (GLAD) |
+| **Procesamiento** | FFTW3 (FFT), IIR1 (Filtros) |
+| **Comunicación** | UART 38400 baud, bidireccional |
+| **Plataforma** | Windows (MSVC 2019+) |
+| **Latencia** | ~0.6–0.8 ms extremo a extremo |
 
-### **📂 Carpetas de Código Fuente**
+## Estructura del Código Fuente
 
-#### **`src/` - Código Fuente Principal**
-Contiene todos los archivos `.cpp` y `.h` del proyecto principal:
 ```
-src/
-├── main.cpp/h          # Punto de entrada, configuración OpenGL/ImGui
-├── MainWindow.cpp/h    # Ventana principal, lógica de UI
-├── Serial.cpp/h        # Comunicación serie con Arduino
-├── FFT.cpp/h           # Análisis espectral con FFTW3
-├── Settings.cpp/h      # Configuraciones del usuario
-├── Console.cpp/h       # Manejo de consola Windows
-├── Buffers.h          # Estructuras de datos para muestras
-└── Widgets.h          # Componentes de UI reutilizables
-```
-**¿Por qué aquí?** Código específico del proyecto, lógica de negocio, implementaciones concretas.
-
-#### **`include/` - Headers Públicos**
-Headers de bibliotecas externas que se pueden incluir:
-```
-include/
-├── fftw3.h            # API principal de FFTW3
-├── glad/glad.h        # Loader de OpenGL
-└── KHR/khrplatform.h  # Platform definitions para OpenGL
-```
-**¿Por qué aquí?** Headers que el proyecto puede incluir directamente, interfaz pública de dependencias.
-
-### **📂 Carpetas de Dependencias**
-
-#### **`extern/` - Bibliotecas Externas**
-Código fuente completo de bibliotecas de terceros:
-```
-extern/
-├── CMakeLists.txt     # Configuración de build para dependencias
-├── fftw3/            # Biblioteca FFT (toda la fuente)
-├── glfw/            # Framework de ventanas OpenGL
-├── imgui/           # Immediate Mode GUI
-├── implot/          # Extensión de plotting para ImGui
-└── iir1/            # Filtros digitales IIR
-```
-**¿Por qué aquí?** Dependencias completas, código que NO escribimos nosotros, bibliotecas reutilizables.
-
-### **📂 Carpetas de Compilación**
-
-#### **`build/` - Build Release**
-```
-build/
-├── CMakeCache.txt     # Cache de configuración CMake
-├── CMakeFiles/        # Archivos internos de CMake
-├── SerialPlotter.exe  # Ejecutable final optimizado
-└── extern/           # Bibliotecas compiladas en Release
+SerialPlotter/
+├── src/
+│   ├── main.cpp/h              # Punto de entrada, loop principal
+│   ├── MainWindow.cpp/h        # Ventana principal, composición UI
+│   ├── Serial.cpp/h            # Control de puerto COM
+│   ├── FFT.cpp/h               # Análisis espectral con FFTW3
+│   ├── Settings.cpp/h          # Persistencia de configuración
+│   ├── Console.cpp/h           # Salida de debugging (Windows)
+│   ├── Buffers.h               # Estructuras circulares para muestras
+│   └── Widgets.h               # Componentes UI reutilizables
+│
+├── extern/
+│   ├── fftw3/                  # Transformada rápida de Fourier
+│   ├── imgui/                  # Interfaz gráfica inmediata
+│   ├── implot/                 # Gráficos para ImGui
+│   ├── glfw/                   # Framework OpenGL
+│   └── iir1/                   # Filtros digitales IIR
+│
+├── include/
+│   ├── fftw3.h
+│   ├── glad/glad.h
+│   └── KHR/khrplatform.h
+│
+└── CMakeLists.txt
 ```
 
-#### **`build-debug/` - Build Debug**  
-```
-build-debug/
-├── SerialPlotter.exe  # Ejecutable con símbolos de debug
-├── SerialPlotter.pdb  # Base de datos de símbolos para debugger
-└── CMakeFiles/        # Archivos de build para modo debug
-```
-**¿Por qué separados?** Diferentes optimizaciones, symbols de debug vs performance.
+## Compilar
 
-#### **`out/` - Output de Visual Studio**
-Carpeta generada automáticamente por Visual Studio para builds locales.
-**¿Por qué aquí?** IDE-specific, no parte del sistema de build principal.
-
-### **📂 Archivos de Configuración**
-
-#### **Archivos Root**
+```bash
+cd SerialPlotter
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/SerialPlotter.exe
 ```
-├── CMakeLists.txt     # Script principal de build
+
+**Requisitos previos**: instalar dependencias según `DEPENDENCIES.md` en la raíz del proyecto.
+
+## Uso
+
+1. Conectar Arduino Mega 2560 por USB
+2. Ejecutar `SerialPlotter.exe`
+3. Seleccionar puerto COM
+4. Configurar filtros y parámetros FFT desde la interfaz
+5. Comenzar adquisición de datos
+
+---
+
+*Componente PC del sistema DSP integrado Arduino + PC. Ver README.md en la raíz para contexto completo.*
 ├── .gitignore         # Archivos a ignorar en Git
 ├── .gitmodules        # Submódulos de Git (dependencias)
 ├── glad.c             # Implementación de glad (OpenGL loader)
