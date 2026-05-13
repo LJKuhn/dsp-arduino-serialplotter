@@ -159,9 +159,16 @@ Optamos por utilizar la placa de desarrollo Arduino Mega 2560 que utilizamos en 
 
 Figura 1.Pines Arduino Mega 2560
 
-El prescaler se encarga de dividir la frecuencia del clock interno del microcontrolador (16MHz) por un valor de potencia de dos para bajar la frecuencia de medición y así que el conversor tenga tiempo de realizar la conversión de analógico a digital. Cabe aclarar que el prescaler máximo que se puede utilizar sin afectar el tiempo de conversión de analógico a digital es 128, dándonos que la frecuencia máxima a la que se puede medir es de 125KHz (16MHz/128). Sin embargo, si se puede utilizar prescaler más chicos como 64, 32 o 16, pero esto afectará la resolución del ADC ya que este tendrá menos tiempo para realizar la conversión. Conversor ADC del Arduino tarda entre 13us a 260us ya que al utiliza la aproximación sucesiva para obtener el valor que se está leyendo.
+El prescaler se encarga de dividir la frecuencia del clock interno del microcontrolador (16MHz) por un valor de potencia de dos para establecer el **clock del ADC**, que determina la velocidad a la que opera internamente el conversor. Cabe aclarar que el prescaler máximo que se puede utilizar sin afectar la resolución del ADC es 128, dándonos un clock ADC de 125 kHz (16 MHz / 128). Sin embargo, se pueden utilizar prescalers más chicos como 64, 32 o 16, pero esto afectará la resolución del ADC ya que este tendrá menos tiempo para realizar la conversión. Es importante distinguir que **125 kHz es la frecuencia del clock ADC, no la frecuencia de conversión**.
 
-Ahora retomando, como la velocidad de medición aceptable sin afectar la resolución del conversor es de 125KHz podemos deducir que la señal en términos aceptables que podremos medir tendrá una frecuencia de 62,5KHz, dos mediciones por ciclo de la señal, ahora si quisiéramos tener una muy buena imagen de la señal la frecuencia máxima de la misma deberá ser de 12,5KHz, para poder tener 10 mediciones por ciclo.
+El conversor ADC del Arduino utiliza la técnica de aproximación sucesiva y requiere **13 ciclos del clock ADC** para completar cada conversión. Esto significa que la frecuencia real de conversión es:
+
+```
+Frecuencia de conversión = 125.000 Hz ÷ 13 ciclos ≈ 9.615 conversiones/segundo
+Tiempo por conversión = 13 ciclos ÷ 125.000 Hz = 104 μs
+```
+
+Retomando, con una tasa de conversión real de ~9.615 Hz, la frecuencia máxima de señal que se puede medir correctamente (criterio de Nyquist, 2 muestras por ciclo) es de aproximadamente **4.807 Hz**. Si quisiéramos tener una buena imagen de la señal con 10 muestras por ciclo, la frecuencia máxima de la señal debería ser de aproximadamente **961 Hz**. En este proyecto, además, el Timer1 toma una muestra cada vez que interrumpe a 3.840 Hz, lo que según Nyquist permite capturar señales de hasta **1.920 Hz** con fidelidad.
 
 Ahora hay que tener en cuenta que la visualización de dichos datos en la computadora tendrá un retraso dependiendo de la velocidad a la que configuremos el puerto serie por el que nos comunicaremos. Podremos elegir entre una velocidad de comunicación de 300-bits por segundo a 115200-bits por segundo. Cabe resaltar que en un principio esto no debería afectar al conversor ya que solo se están enviando los valores obtenidos y almacenados en el Arduino, pero puede darse el caso de que se eligen velocidades de comunicación muy bajas no se lleguen a visualizar algunos datos o por el otro lado si se envían datos por el puerto seri se utilicen recursos para procesarlos y disminuya la velocidad de comunicación.
 
@@ -721,9 +728,15 @@ Tiempo de conversión = 13 ciclos × (1/125kHz) = 104 μs
 
 Frecuencia máxima teórica = 125kHz / 13 ≈ 9.6 kHz
 
+#### 6.4 Reducción 10→8 bits
+
 Conversión de datos 10→8 bits mediante ADLAR (Left Adjust):
 
-Resultado del ADC Ajustado a la Izquierda es una técnica eficiente de conversión a nivel de software para adaptar la lectura de 10bits a 8bits y que sea compatible a la hora de utilizarla en otros procesos como su recreación con el DAC:
+Decisión: transmitir 8 bits en lugar de los 10 bits nativos del ADC.
+
+Se utilizan 8 bits en lugar de los 10 bits de resolución del ADC para agilizar el envío de datos por el puerto serie y, además, simplificar la reutilización de la información al reconstruir la señal en el DAC R2R, que también trabaja con resolución de 8 bits.
+
+Si se quisieran usar los 10 bits completos, el proceso sería más costoso porque habría que combinar dos registros en cada muestra: `ADCH` (8 bits más significativos) y `ADCL` (2 bits menos significativos útiles). En cambio, con `ADLAR = 1` basta con leer `ADCH`, guardar el byte directamente y evitar el paso de unificación, reduciendo carga de procesamiento y tráfico serial.
 
 // Configuración del ADC con ADLAR (alineación izquierda)
 

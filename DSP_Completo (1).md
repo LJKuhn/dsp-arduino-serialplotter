@@ -189,6 +189,32 @@ Sin jitter (variabilidad temporal): A diferencia de disparar el ADC manualmente 
 
 El Prescaler del ADC divide la frecuencia del reloj del sistema (16 MHz) para establecer la velocidad de conversión. En nuestro caso, usamos prescaler de 128, lo que da una frecuencia de reloj ADC de 125 kHz. A esta velocidad, cada conversión de 10 bits toma aproximadamente 13 ciclos = 104 μs, suficientemente rápido para completarse antes del siguiente disparo del Timer1 (260 μs después).
 
+### Relación entre Prescaler, Ciclos de Conversión y Frecuencias de Muestreo:
+
+Es importante entender la relación matemática entre los parámetros del ADC y las frecuencias reales de operación:
+
+**Capacidad teórica del ADC (sin control externo):**
+- Prescaler: 128 → Frecuencia ADC = 16 MHz ÷ 128 = **125 kHz**
+- Ciclos por conversión: 13 ciclos
+- Frecuencia máxima de conversiones: 125 kHz ÷ 13 = **~9600 Hz**
+
+Esto significa que el ADC es **capaz** de realizar ~9600 conversiones por segundo si funcionara sin restricciones. Sin embargo, en nuestro proyecto **no usamos esta velocidad completa**.
+
+**Frecuencia real implementada (con Timer1):**
+- El Timer1 controla cuándo se disparan realmente las conversiones
+- Configuración: Timer1 a **3840 Hz**
+- Intervalo entre disparos: 1 ÷ 3840 Hz ≈ **260.4 μs**
+- Esto es más lento que la velocidad máxima del ADC (104 μs por conversión)
+
+**¿Por qué usamos 3840 Hz en lugar de 9600 Hz?**
+
+El Timer1 a 3840 Hz es la frecuencia de muestreo elegida porque:
+1. **Sincronización con comunicación serial**: Baudrate 38400 = 3840 × 10 bits/byte (cada byte requiere 10 bits en UART)
+2. **Suficiente para 50 Hz**: Permite capturar frecuencias hasta ~1920 Hz (Nyquist), más que suficiente para redes eléctricas a 50 Hz
+3. **Margen de seguridad**: Como cada conversión toma 104 μs y disparamos cada 260 μs, hay 156 μs de margen para que el ADC complete la conversión sin presión de tiempo
+
+En resumen:
+
 ### Interrupciones del ADC:
 
 Configuramos el ADC para generar una interrupción cuando completa cada conversión (bit ADIE=1). La rutina de servicio de interrupción (ISR) lee el valor del registro ADCH (8 bits más significativos) y lo coloca en un buffer circular para transmisión serial. Esta arquitectura de interrupciones permite que el programa principal se dedique a transmitir datos mientras el hardware se encarga de la adquisición precisa. Como parámetros de seguridad debemos tener en consideración el voltaje máximo de la señal de entrada esté dentro de los límites de tolerancia del dispositivo. Cada dispositivo tendrá una clasificación de voltaje máximo que no debe excederse. Si se excede este valor, puede dañar permanentemente el componente, en el caso de los pines analógicos del Arduino Mega 2560 el rango de voltaje de operación va desde los 0V a los 5V, por lo que si se necesitan medir señales mayores podemos utilizar el pin de referencia del Arduino o acondicionar la señal de modo que quede dentro del rango de trabajo del mismo.
@@ -607,15 +633,11 @@ ADMUX = AVcc | AJUSTAR_IZQUIERDA | pin;  // ADLAR = 1
 
 // ...
 
-}
-
 // Lectura directa de 8 bits más significativos
 
 void ADCController::conversion_complete() {
 
 uint8_t high = ADCH;  // Solo lee registro alto (8 bits MSB)
-
-data = high;          // Descarta automáticamente 2 bits LSB
 
 }
 
@@ -1074,35 +1096,15 @@ Energía_armónicas = √(A₂² + A₃² + A₄²)
 
 Paso 2: Dividir por la fundamental
 
-THD = Energía_armónicas / A₁ × 100%
-
-= 0.1136 / 1.000 × 100%
-
-= 11.36%
 
 **Interpretación del resultado:**
-
-El 11.36% de la "energía" de la señal está en armónicas indeseadas
-
-Un generador de tonos puro debería tener THD < 1%
-
 Este valor (11.36%) indica distorsión moderada
-
-**Comparación de formas de onda típicas:**
 
 **Aplicación práctica en el proyecto:**
 
 // El código calcula THD automáticamente:
 
 std::vector<Harmonic> harmonics = fft->FindHarmonics(3);
-
-double sum_squares = 0;
-
-for (int i = 1; i < harmonics.size(); i++) {  // i=1 salta la fundamental
-
-sum_squares += harmonics[i].amplitude * harmonics[i].amplitude;
-
-}
 
 double thd = sqrt(sum_squares) / harmonics[0].amplitude * 100.0;
 
